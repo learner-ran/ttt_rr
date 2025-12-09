@@ -9,7 +9,7 @@ import torch.distributed
 import torch.nn.functional as F
 
 from torch.nn.init import trunc_normal_
-
+ 
 from sam2.modeling.sam.mask_decoder import MaskDecoder
 from sam2.modeling.sam.prompt_encoder import PromptEncoder
 from sam2.modeling.sam.transformer import TwoWayTransformer

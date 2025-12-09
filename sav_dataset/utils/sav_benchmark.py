@@ -52,7 +52,10 @@ class VideoEvaluator:
                 all_frames = all_frames[1:-1]
 
             evaluator = Evaluator(name=vid_name, obj_id=obj_id)
-            for frame in all_frames:
+            total_frames = len(all_frames)
+            for i, frame in enumerate(all_frames):
+                if i % 10 == 0:
+                    print(f"Processing {vid_name} frame {i}/{total_frames}")
                 gt_array, pred_array = self.get_gt_and_pred(
                     gt_path, pred_path, frame, is_sav_format
                 )

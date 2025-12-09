@@ -8,7 +8,8 @@ import logging
 import os
 
 import torch
-from hydra import compose
+from hydra import compose, initialize_config_dir
+from hydra.core.global_hydra import GlobalHydra
 from hydra.utils import instantiate
 from omegaconf import OmegaConf
 
@@ -87,7 +88,19 @@ def build_sam2(
             "++model.sam_mask_decoder_extra_args.dynamic_multimask_stability_thresh=0.98",
         ]
     # Read config and init model
-    cfg = compose(config_name=config_file, overrides=hydra_overrides_extra)
+    if os.path.isabs(config_file) or os.path.exists(config_file):
+        # It's a file path
+        config_dir = os.path.dirname(os.path.abspath(config_file))
+        config_name = os.path.basename(config_file)
+        
+        # We need to handle GlobalHydra if it's already initialized
+        if GlobalHydra.instance().is_initialized():
+             GlobalHydra.instance().clear()
+             
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+             cfg = compose(config_name=config_name, overrides=hydra_overrides_extra)
+    else:
+        cfg = compose(config_name=config_file, overrides=hydra_overrides_extra)
     OmegaConf.resolve(cfg)
     model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path)
@@ -131,7 +144,19 @@ def build_sam2_video_predictor(
     hydra_overrides.extend(hydra_overrides_extra)
 
     # Read config and init model
-    cfg = compose(config_name=config_file, overrides=hydra_overrides)
+    if os.path.isabs(config_file) or os.path.exists(config_file):
+        # It's a file path
+        config_dir = os.path.dirname(os.path.abspath(config_file))
+        config_name = os.path.basename(config_file)
+        
+        # We need to handle GlobalHydra if it's already initialized
+        if GlobalHydra.instance().is_initialized():
+             GlobalHydra.instance().clear()
+             
+        with initialize_config_dir(config_dir=config_dir, version_base=None):
+             cfg = compose(config_name=config_name, overrides=hydra_overrides)
+    else:
+        cfg = compose(config_name=config_file, overrides=hydra_overrides)
     OmegaConf.resolve(cfg)
     model = instantiate(cfg.model, _recursive_=True)
     _load_checkpoint(model, ckpt_path)
