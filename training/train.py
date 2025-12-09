@@ -267,4 +267,26 @@ if __name__ == "__main__":
     args = parser.parse_args()
     args.use_cluster = bool(args.use_cluster) if args.use_cluster is not None else None
     register_omegaconf_resolvers()
+
+    # Fix for Hydra config path
+    import sys
+    if os.getcwd() not in sys.path:
+        sys.path.append(os.getcwd())
+
+    from hydra import initialize_config_dir
+    from hydra.core.global_hydra import GlobalHydra
+    
+    # Use absolute path for config_dir
+    config_dir = os.path.join(os.getcwd(), "sam2", "configs")
+    
+    # Force clear Hydra state if it was initialized by sam2 import
+    if GlobalHydra.instance().is_initialized():
+        GlobalHydra.instance().clear()
+
+    initialize_config_dir(config_dir=config_dir, version_base="1.2")
+    
+    # Strip the path prefix from args.config because Hydra expects a relative path from config_dir
+    if "sam2/configs/" in args.config:
+        args.config = args.config.split("sam2/configs/")[-1]
+
     main(args)

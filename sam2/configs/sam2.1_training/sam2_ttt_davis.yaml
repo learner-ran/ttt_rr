@@ -2,9 +2,9 @@
 
 scratch:
   resolution: 1024
-  train_batch_size: 1  # 显存溢出，降为 1
-  num_train_workers: 2 # 降低 worker 数量以减少系统内存压力
-  num_frames: 4        # 8帧峰值31GB，6帧约24GB(极限)，建议5帧(约20GB)以保稳定
+  train_batch_size: 2  # 显存溢出，降为 2
+  num_train_workers: 8
+  num_frames: 8        # 保持 8 帧
   max_num_objects: 3
   base_lr: 1.0e-4      # 基础学习率，从 1e-5 提高到 1e-4 以加速新模块收敛
   vision_lr: 0.0       # 视觉编码器学习率设为0
@@ -13,8 +13,8 @@ scratch:
 
 dataset:
   # 服务器上的 DAVIS 数据集路径
-  img_folder: /mnt/d/RAN/DAVIS-2017-trainval-480p/DAVIS/JPEGImages/480p
-  gt_folder: /mnt/d/RAN/DAVIS-2017-trainval-480p/DAVIS/Annotations/480p
+  img_folder: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/JPEGImages/Full-Resolution
+  gt_folder: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/Annotations/Full-Resolution
   file_list_txt: null  # 设为 null，自动读取文件夹下的所有视频
   multiplier: 1
 
@@ -72,9 +72,12 @@ trainer:
       scalp: 1
       trunk:
         _target_: sam2.modeling.backbones.hieradet.Hiera
-        embed_dim: 112
+        embed_dim: 144
         num_heads: 2
-        drop_path_rate: 0.1
+        stages: [2, 6, 36, 4]
+        global_att_blocks: [23, 33, 43]
+        window_pos_embed_bkg_spatial_size: [7, 7]
+        window_spec: [8, 4, 16, 8]
       neck:
         _target_: sam2.modeling.backbones.image_encoder.FpnNeck
         position_encoding:
@@ -84,7 +87,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [896, 448, 224, 112]
+        backbone_channel_list: [1152, 576, 288, 144]
         fpn_top_down_levels: [2, 3]
         fpn_interp_model: nearest
 
@@ -306,7 +309,7 @@ trainer:
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
         # 请确保此路径下有预训练权重，或者修改为绝对路径
-        checkpoint_path: checkpoints/sam2.1_hiera_base_plus.pt
+        checkpoint_path: checkpoints/sam2.1_hiera_large.pt
         ckpt_state_dict_keys: ['model']
 
 launcher:
