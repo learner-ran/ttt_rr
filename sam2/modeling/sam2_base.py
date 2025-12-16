@@ -9,14 +9,13 @@ import torch.distributed
 import torch.nn.functional as F
 
 from torch.nn.init import trunc_normal_
- 
+
 from sam2.modeling.sam.mask_decoder import MaskDecoder
 from sam2.modeling.sam.prompt_encoder import PromptEncoder
 from sam2.modeling.sam.transformer import TwoWayTransformer
 from sam2.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
-from .sam_ttt.DWT import extract_high_frequency
-from .sam_ttt.mix_embedding import ME
-from .sam_ttt.Route_Fuse import routefuse
+from .sam_ttt.ttt_module import TTTModule
+from .sam_ttt.ttt import TTTCache
 
 # a large negative value as a placeholder score for missing objects
 NO_OBJ_SCORE = -1024.0
@@ -181,15 +180,15 @@ class SAM2Base(torch.nn.Module):
             self.no_obj_embed_spatial = torch.nn.Parameter(torch.zeros(1, self.mem_dim))
             trunc_normal_(self.no_obj_embed_spatial, std=0.02)
 
+        # TTT Module
+        self.ttt_module = TTTModule(hidden_dim=self.hidden_dim, mem_dim=self.mem_dim, num_layers=4)
+        
+        # Freeze Image Encoder
+        for param in self.image_encoder.parameters():
+            param.requires_grad = False
+
         self._build_sam_heads()
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
-
-        # --- SAM-TTT Integration Start ---
-        self.DWT = extract_high_frequency()
-        # ME 初始化：输入 512 (256*2), 输出 256
-        self.ME = ME(in_channels=self.hidden_dim * 2, out_channels=self.hidden_dim)
-        self.routefuse = routefuse(self.hidden_dim, self.hidden_dim)
-        # --- SAM-TTT Integration End ---
 
         # Model compilation
         if compile_image_encoder:
@@ -328,7 +327,6 @@ class SAM2Base(torch.nn.Module):
             sam_point_labels = -torch.ones(B, 1, dtype=torch.int32, device=device)
 
         # b) Handle mask prompts
-        sam_mask_prompt = None
         if mask_inputs is not None:
             # If mask_inputs is provided, downsize it into low-res mask input if needed
             # and feed it as a dense mask prompt into the SAM mask encoder
@@ -343,27 +341,16 @@ class SAM2Base(torch.nn.Module):
                 )
             else:
                 sam_mask_prompt = mask_inputs
+        else:
+            # Otherwise, simply feed None (and SAM's prompt encoder will add
+            # a learned `no_mask_embed` to indicate no mask input in this case).
+            sam_mask_prompt = None
+
         sparse_embeddings, dense_embeddings = self.sam_prompt_encoder(
             points=(sam_point_coords, sam_point_labels),
             boxes=None,
             masks=sam_mask_prompt,
         )
-
-        # --- SAM-TTT Integration Start ---
-        # 1. 提取高频特征 (DWT)
-        high_frequency = self.DWT(backbone_features)
-        
-        # 2. 融合特征 (ME)
-        # 注意：我们将 dense_embeddings 传入两次以模拟 boundary 和 box 输入
-        dense_embeddings, sparse_embeddings = self.ME(
-            dense_embeddings, 
-            dense_embeddings, 
-            high_frequency, 
-            sparse_embeddings, 
-            route=2
-        )
-        # --- SAM-TTT Integration End ---
-
         (
             low_res_multimasks,
             ious,
@@ -553,41 +540,48 @@ class SAM2Base(torch.nn.Module):
                 frame_idx, cond_outputs, self.max_cond_frames_in_attn
             )
             t_pos_and_prevs = [(0, out) for out in selected_cond_outputs.values()]
-            # Add last (self.num_maskmem - 1) frames before current frame for non-conditioning memory
-            # the earliest one has t_pos=1 and the latest one has t_pos=self.num_maskmem-1
-            # We also allow taking the memory frame non-consecutively (with stride>1), in which case
-            # we take (self.num_maskmem - 2) frames among every stride-th frames plus the last frame.
-            stride = 1 if self.training else self.memory_temporal_stride_for_eval
-            for t_pos in range(1, self.num_maskmem):
-                t_rel = self.num_maskmem - t_pos  # how many frames before current frame
-                if t_rel == 1:
-                    # for t_rel == 1, we take the last frame (regardless of r)
-                    if not track_in_reverse:
-                        # the frame immediately before this frame (i.e. frame_idx - 1)
-                        prev_frame_idx = frame_idx - t_rel
-                    else:
-                        # the frame immediately after this frame (i.e. frame_idx + 1)
-                        prev_frame_idx = frame_idx + t_rel
-                else:
-                    # for t_rel >= 2, we take the memory frame from every r-th frames
-                    if not track_in_reverse:
-                        # first find the nearest frame among every r-th frames before this frame
-                        # for r=1, this would be (frame_idx - 2)
-                        prev_frame_idx = ((frame_idx - 2) // stride) * stride
-                        # then seek further among every r-th frames
-                        prev_frame_idx = prev_frame_idx - (t_rel - 2) * stride
-                    else:
-                        # first find the nearest frame among every r-th frames after this frame
-                        # for r=1, this would be (frame_idx + 2)
-                        prev_frame_idx = -(-(frame_idx + 2) // stride) * stride
-                        # then seek further among every r-th frames
-                        prev_frame_idx = prev_frame_idx + (t_rel - 2) * stride
-                out = output_dict["non_cond_frame_outputs"].get(prev_frame_idx, None)
-                if out is None:
-                    # If an unselected conditioning frame is among the last (self.num_maskmem - 1)
-                    # frames, we still attend to it as if it's a non-conditioning frame.
-                    out = unselected_cond_outputs.get(prev_frame_idx, None)
-                t_pos_and_prevs.append((t_pos, out))
+            # Restricted Explicit Memory Stream
+            # Only retrieve {cond0, last, keyframe}
+            
+            # 1. Last Frame (t-1)
+            if not track_in_reverse:
+                last_frame_idx = frame_idx - 1
+            else:
+                last_frame_idx = frame_idx + 1
+            
+            out_last = output_dict["non_cond_frame_outputs"].get(last_frame_idx, None)
+            if out_last is None:
+                out_last = unselected_cond_outputs.get(last_frame_idx, None)
+            
+            if out_last is not None:
+                # Assign t_pos = num_maskmem - 1 (closest)
+                t_pos_and_prevs.append((self.num_maskmem - 1, out_last))
+
+            # 2. Sparse Keyframe (max 1)
+            # Strategy: Find the most recent frame t such that t % 10 == 0 and t != last_frame_idx
+            # We search in non_cond_frame_outputs
+            
+            best_key_idx = None
+            
+            # Get all available indices
+            available_indices = list(output_dict["non_cond_frame_outputs"].keys())
+            # Sort them
+            available_indices.sort(reverse=not track_in_reverse)
+            
+            for idx in available_indices:
+                if idx == last_frame_idx:
+                    continue
+                if idx % 10 == 0:
+                    # Found the most recent keyframe candidate
+                    best_key_idx = idx
+                    break
+            
+            if best_key_idx is not None:
+                out_key = output_dict["non_cond_frame_outputs"][best_key_idx]
+                # Assign t_pos = num_maskmem - 2 (second closest slot)
+                # Ensure we don't overwrite if num_maskmem is small
+                if self.num_maskmem >= 2:
+                    t_pos_and_prevs.append((self.num_maskmem - 2, out_key))
 
             for t_pos, prev in t_pos_and_prevs:
                 if prev is None:
@@ -790,6 +784,21 @@ class SAM2Base(torch.nn.Module):
                 num_frames=num_frames,
                 track_in_reverse=track_in_reverse,
             )
+
+            # --- TTT Stream (Parallel) ---
+            # Source: current_vision_feats[-1] (Raw Image Features) [L, B, C]
+            feat_ttt = self.ttt_module(current_vision_feats[-1]) # [B, C, H, W]
+            
+            # Fusion
+            gate = 1.0
+            if frame_idx == 0:
+                gate = 0.0
+            
+            if self.ttt_module.step_counter <= 1 and frame_idx == 0:
+                 print(f"[Fusion Check] alpha_global: {self.ttt_module.alpha_global.item()}, gate: {gate}")
+            
+            pix_feat = pix_feat + self.ttt_module.alpha_global * gate * feat_ttt
+
             # apply SAM-style segmentation head
             # here we might feed previously predicted low-res SAM mask logits into the SAM mask decoder,
             # e.g. in demo where such logits come from earlier interaction instead of correction sampling
@@ -898,7 +907,60 @@ class SAM2Base(torch.nn.Module):
             current_out,
         )
 
+        # TTT Update
+        if run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
+             # Gating
+             scores = torch.sigmoid(object_score_logits)
+             is_reliable = scores > 0.5 
+             
+             # Assuming batch size B=1 for simplicity or all reliable
+             if is_reliable.all():
+                 # X: Raw image features. current_vision_feats[-1] is [B, C, H, W]
+                 X = current_vision_feats[-1].flatten(2).permute(0, 2, 1)
+                 # Y: Memory features. current_out["maskmem_features"] is [B, mem_dim, H, W]
+                 Y = current_out["maskmem_features"].flatten(2).permute(0, 2, 1)
+                 
+                 if "ttt_cache" in output_dict:
+                     self.ttt_module.step_update(X, Y, output_dict["ttt_cache"])
+        
+        # Memory Pruning (Restricted Explicit Memory)
+        # Only keep: Cond0, Last Frame (frame_idx), and Keyframe
+        if not self.training and run_mem_encoder:
+             self._manage_memory_storage(output_dict, frame_idx, object_score_logits)
+
         return current_out
+
+    def _manage_memory_storage(self, output_dict, current_frame_idx, object_score_logits):
+        """
+        Prune non_cond_frame_outputs to keep only:
+        1. Last Frame (current_frame_idx)
+        2. Best Keyframe (most recent t % 10 == 0 with high score)
+        """
+        if "non_cond_frame_outputs" not in output_dict:
+            return
+
+        # Identify Keyframe Candidate
+        is_keyframe_candidate = (current_frame_idx % 10 == 0)
+        score = torch.sigmoid(object_score_logits).max() # Max score across batch/pixels? No, object_score_logits is [B, 1] usually?
+        # object_score_logits shape is [B, 1]
+        is_high_quality = score > 0.85
+        
+        if is_keyframe_candidate and is_high_quality:
+            output_dict["keyframe_idx"] = current_frame_idx
+        
+        keyframe_idx = output_dict.get("keyframe_idx", None)
+        
+        # Prune
+        frames_to_remove = []
+        for t in output_dict["non_cond_frame_outputs"]:
+            if t == current_frame_idx:
+                continue # Keep last frame
+            if t == keyframe_idx:
+                continue # Keep keyframe
+            frames_to_remove.append(t)
+            
+        for t in frames_to_remove:
+            del output_dict["non_cond_frame_outputs"][t]
 
     def _use_multimask(self, is_init_cond_frame, point_inputs):
         """Whether to use multimask output in the SAM head."""

@@ -105,6 +105,10 @@ class SAM2Train(SAM2Base):
                 p.requires_grad = False
 
     def forward(self, input: BatchedVideoDatapoint):
+        # Reset TTT module for each batch
+        if hasattr(self, 'ttt_module'):
+            self.ttt_module.reset_parameters()
+
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
             backbone_out = self.forward_image(input.flat_img_batch)
@@ -443,6 +447,34 @@ class SAM2Train(SAM2Base):
             object_score_logits,
             current_out,
         )
+
+        # TTT Update
+        if run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
+             # Gating Logic
+             should_update = False
+             if self.training:
+                 should_update = True # Teacher Forcing
+             else:
+                 # Inference: pred_iou > 0.8
+                 # We have `ious` (from sam_outputs) in `current_out["multistep_pred_ious"]`
+                 # ious is [B, M]
+                 # We want the best IoU.
+                 ious = current_out["multistep_pred_ious"][-1] # Last step IoU
+                 max_iou = ious.max(dim=-1)[0] # [B]
+                 if max_iou.mean() > 0.8:
+                     should_update = True
+             
+             if should_update:
+                 loss = self.ttt_module.step_update(
+                     current_vision_feats[-1], 
+                     current_out["maskmem_features"],
+                     update_cache=True
+                 )
+                 
+                 # Print Update Count Check
+                 if self.ttt_module.step_counter <= 5 or self.ttt_module.step_counter % 100 == 0:
+                     print(f"[Update Count Check] Step: {self.ttt_module.step_counter}, Loss: {loss.item()}, Updated: {should_update}")
+
         return current_out
 
     def _iter_correct_pt_sampling(

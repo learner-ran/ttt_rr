@@ -236,6 +236,7 @@ def ln_fused_l2_bwd(x, l2_target, gamma, beta, eps=1e-6):
 class TTTCache:
     def __init__(self, model, batch_size: int):
         config = model.config
+        device = next(model.parameters()).device
         self.seqlen_offset = 0
         self.mini_batch_size = config.mini_batch_size
 
@@ -250,8 +251,13 @@ class TTTCache:
         self.conv_states_dic = defaultdict(dict)
         for layer_idx in range(config.num_hidden_layers):
             for name in self.ttt_param_names:
-                weight = getattr(model.layers[layer_idx].seq_modeling_block, name)
-                tiled_weight = torch.tile(weight.unsqueeze(0), (batch_size,) + (1,) * weight.dim()).to(model.device)
+                if hasattr(model.layers[layer_idx], "seq_modeling_block"):
+                    weight = getattr(model.layers[layer_idx].seq_modeling_block, name)
+                else:
+                    weight = getattr(model.layers[layer_idx], name)
+                
+                device = next(model.parameters()).device
+                tiled_weight = torch.tile(weight.unsqueeze(0), (batch_size,) + (1,) * weight.dim()).to(device)
                 self.ttt_params_dict[f"{name}_states"][layer_idx] = tiled_weight
                 self.ttt_params_dict[f"{name}_grad"][layer_idx] = torch.zeros_like(tiled_weight)
 
@@ -260,20 +266,20 @@ class TTTCache:
                     batch_size,
                     config.hidden_size,
                     config.conv_kernel,
-                    device=model.device,
+                    device=device,
                 )
             if config.share_qk:
                 self.conv_states_dic["ttt_conv_q"][layer_idx] = torch.zeros(
                     batch_size,
                     config.hidden_size,
                     config.conv_kernel,
-                    device=model.device,
+                    device=device,
                 )
                 self.conv_states_dic["ttt_conv_k"][layer_idx] = torch.zeros(
                     batch_size,
                     config.hidden_size,
                     config.conv_kernel,
-                    device=model.device,
+                    device=device,
                 )
 
     def update(self, py_tree, layer_idx, seq_len):

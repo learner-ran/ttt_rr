@@ -61,6 +61,8 @@ def register_omegaconf_resolvers():
     OmegaConf.register_new_resolver("int", lambda x: int(x))
     OmegaConf.register_new_resolver("ceil_int", lambda x: int(math.ceil(x)))
     OmegaConf.register_new_resolver("merge", lambda *x: OmegaConf.merge(*x))
+    # Register env resolver
+    OmegaConf.register_new_resolver("env", lambda x, y=None: os.environ.get(x, y))
 
 
 def setup_distributed_backend(backend, timeout_mins):

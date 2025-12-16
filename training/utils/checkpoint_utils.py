@@ -349,6 +349,19 @@ def load_state_dict_into_model(
     if checkpoint_kernels is not None:
         for f in checkpoint_kernels:
             state_dict = f(state_dict=state_dict)
+            
+    # Handle shape mismatches
+    model_state_dict = model.state_dict()
+    keys_to_remove = []
+    for k, v in state_dict.items():
+        if k in model_state_dict:
+            if v.shape != model_state_dict[k].shape:
+                logging.warning(f"Shape mismatch for key {k}: checkpoint {v.shape} vs model {model_state_dict[k].shape}. Dropping from checkpoint.")
+                keys_to_remove.append(k)
+    
+    for k in keys_to_remove:
+        del state_dict[k]
+        
     missing_keys, unexpected_keys = model.load_state_dict(state_dict, strict=False)
 
     check_load_state_dict_errors(
