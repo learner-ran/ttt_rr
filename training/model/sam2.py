@@ -105,9 +105,16 @@ class SAM2Train(SAM2Base):
                 p.requires_grad = False
 
     def forward(self, input: BatchedVideoDatapoint):
-        # Reset TTT module for each batch
+        # ============================================================================
+        # Reset TTT for new video/batch
+        # ============================================================================
         if hasattr(self, 'ttt_module'):
             self.ttt_module.reset_parameters()
+            self.ttt_module.step_counter = 0
+            self.ttt_module.global_step += 1
+            if self.ttt_module.config.verbose and self.ttt_module.global_step <= 3:
+                print(f"\n[SAM2Train] New batch starting, global_step={self.ttt_module.global_step}")
+                print(f"[SAM2Train] TTT module reset, ready for new video sequence")
 
         if self.training or not self.forward_backbone_per_frame_for_eval:
             # precompute image features on all frames before tracking
@@ -448,32 +455,53 @@ class SAM2Train(SAM2Base):
             current_out,
         )
 
-        # TTT Update
+        # ============================================================================
+        # TTT Update (Meta-Learning Inner Loop)
+        # ============================================================================
         if run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
-             # Gating Logic
-             should_update = False
-             if self.training:
-                 should_update = True # Teacher Forcing
-             else:
-                 # Inference: pred_iou > 0.8
-                 # We have `ious` (from sam_outputs) in `current_out["multistep_pred_ious"]`
-                 # ious is [B, M]
-                 # We want the best IoU.
-                 ious = current_out["multistep_pred_ious"][-1] # Last step IoU
-                 max_iou = ious.max(dim=-1)[0] # [B]
-                 if max_iou.mean() > 0.8:
-                     should_update = True
-             
-             if should_update:
-                 loss = self.ttt_module.step_update(
-                     current_vision_feats[-1], 
-                     current_out["maskmem_features"],
-                     update_cache=True
-                 )
-                 
-                 # Print Update Count Check
-                 if self.ttt_module.step_counter <= 5 or self.ttt_module.step_counter % 100 == 0:
-                     print(f"[Update Count Check] Step: {self.ttt_module.step_counter}, Loss: {loss.item()}, Updated: {should_update}")
+            # 获取 IoU 用于门控（来自 mask decoder 的 IoU head）
+            if "multistep_pred_ious" in current_out and len(current_out["multistep_pred_ious"]) > 0:
+                pred_iou = current_out["multistep_pred_ious"][-1]  # [B, num_masks]
+            else:
+                pred_iou = torch.ones(1, device=current_vision_feats[-1].device)
+            
+            # 门控判断：使用 ttt_module 的 should_update 方法
+            should_update = self.ttt_module.should_update(pred_iou, self.training)
+            
+            # 日志
+            verbose = self.ttt_module.step_counter < self.ttt_module.config.log_first_n
+            if verbose:
+                print(f"[TTT Update Gate] frame={frame_idx}, training={self.training}, "
+                      f"pred_iou.mean={pred_iou.mean().item():.4f}, should_update={should_update}")
+            
+            if should_update:
+                # 确保有 ttt_cache
+                if "ttt_cache" not in output_dict or output_dict["ttt_cache"] is None:
+                    B = current_vision_feats[-1].shape[1]
+                    output_dict["ttt_cache"] = self.ttt_module.create_cache(
+                        batch_size=B,
+                        device=current_vision_feats[-1].device,
+                        dtype=current_vision_feats[-1].dtype
+                    )
+                
+                ttt_cache = output_dict["ttt_cache"]
+                
+                # 执行 TTT 更新
+                ttt_loss = self.ttt_module.step_update(
+                    vision_feats=current_vision_feats[-1],  # [L, B, C]
+                    maskmem_features=current_out["maskmem_features"],  # [B, C_mem, H, W]
+                    ttt_cache=ttt_cache,
+                    second_order=getattr(self.ttt_module.config, 'second_order', False)
+                )
+                
+                # 记录 loss 到输出
+                current_out["ttt_loss"] = ttt_loss
+                
+                # 日志
+                if verbose or self.ttt_module.step_counter % 100 == 0:
+                    cache_state = ttt_cache.get_state_dict()
+                    print(f"[TTT Update Done] frame={frame_idx}, loss={ttt_loss.item():.6f}, "
+                          f"step={cache_state['step']}, update_count={cache_state['update_count']}")
 
         return current_out
 

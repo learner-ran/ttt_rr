@@ -14,7 +14,7 @@ from sam2.modeling.sam.mask_decoder import MaskDecoder
 from sam2.modeling.sam.prompt_encoder import PromptEncoder
 from sam2.modeling.sam.transformer import TwoWayTransformer
 from sam2.modeling.sam2_utils import get_1d_sine_pe, MLP, select_closest_cond_frames
-from .sam_ttt.ttt_module import TTTModule
+from .sam_ttt.ttt_module import TTTModule, TTTConfig, TTTCache, create_ttt_cache
 from .sam_ttt.ttt import TTTCache
 
 # a large negative value as a placeholder score for missing objects
@@ -180,12 +180,36 @@ class SAM2Base(torch.nn.Module):
             self.no_obj_embed_spatial = torch.nn.Parameter(torch.zeros(1, self.mem_dim))
             trunc_normal_(self.no_obj_embed_spatial, std=0.02)
 
-        # TTT Module
-        self.ttt_module = TTTModule(hidden_dim=self.hidden_dim, mem_dim=self.mem_dim, num_layers=4)
+        # ============================================================================
+        # TTT Module 初始化 (Cache-Based Meta-Learning)
+        # ============================================================================
+        ttt_config = TTTConfig(
+            hidden_dim=self.hidden_dim,
+            mem_dim=self.mem_dim,
+            num_layers=4,
+            num_heads=4,
+        )
+        
+        self.ttt_module = TTTModule(
+            hidden_dim=self.hidden_dim,
+            mem_dim=self.mem_dim,
+            config=ttt_config
+        )
+        
+        # 关键配置打印
+        print("=" * 60)
+        print("[SAM2Base] Initialization:")
+        print(f"  num_maskmem: {self.num_maskmem}")
+        print(f"  hidden_dim: {self.hidden_dim}")
+        print(f"  mem_dim: {self.mem_dim}")
+        assert self.num_maskmem >= 3, f"num_maskmem must be >= 3 for Cond0+Last+Keyframe, got {self.num_maskmem}"
+        print("=" * 60)
         
         # Freeze Image Encoder
         for param in self.image_encoder.parameters():
             param.requires_grad = False
+        print("[SAM2Base] Image encoder frozen.")
+
 
         self._build_sam_heads()
         self.max_cond_frames_in_attn = max_cond_frames_in_attn
@@ -785,18 +809,35 @@ class SAM2Base(torch.nn.Module):
                 track_in_reverse=track_in_reverse,
             )
 
-            # --- TTT Stream (Parallel) ---
-            # Source: current_vision_feats[-1] (Raw Image Features) [L, B, C]
-            feat_ttt = self.ttt_module(current_vision_feats[-1]) # [B, C, H, W]
+            # ============================================================================
+            # TTT Stream (Parallel) - Using Cache-Based Meta-Learning
+            # ============================================================================
+            # 确保 output_dict 中有 ttt_cache
+            if "ttt_cache" not in output_dict or output_dict["ttt_cache"] is None:
+                B = current_vision_feats[-1].shape[1]
+                output_dict["ttt_cache"] = self.ttt_module.create_cache(
+                    batch_size=B,
+                    device=current_vision_feats[-1].device,
+                    dtype=current_vision_feats[-1].dtype
+                )
+                if self.ttt_module.config.verbose:
+                    print(f"[TTT] Created new cache for batch_size={B}")
             
-            # Fusion
+            ttt_cache = output_dict["ttt_cache"]
+            
+            # TTT Forward: 使用 cache 中的 W
+            feat_ttt = self.ttt_module(current_vision_feats[-1], ttt_cache)  # [B, C, H, W]
+            
+            # Fusion Gate
             gate = 1.0
             if frame_idx == 0:
-                gate = 0.0
+                gate = 0.0  # 第一帧不使用 TTT 输出
             
-            if self.ttt_module.step_counter <= 1 and frame_idx == 0:
-                 print(f"[Fusion Check] alpha_global: {self.ttt_module.alpha_global.item()}, gate: {gate}")
+            # 日志
+            if self.ttt_module.step_counter < self.ttt_module.config.log_first_n:
+                print(f"[TTT Fusion] frame={frame_idx}, gate={gate}, alpha={self.ttt_module.alpha_global.item():.4f}")
             
+            # Fusion: pix_feat = memory_attention_out + alpha * gate * ttt_out
             pix_feat = pix_feat + self.ttt_module.alpha_global * gate * feat_ttt
 
             # apply SAM-style segmentation head
