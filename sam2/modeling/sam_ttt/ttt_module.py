@@ -361,9 +361,18 @@ class TTTModule(nn.Module):
         创建新的 TTT cache，从 W_init 初始化。
         
         **重要**：使用 W_init.repeat(B,...) 而非 torch.randn
+        
+        **元学习关键**：
+        - 训练时(self.training=True)：保持 W_init 的梯度路径，让外循环能优化 W_init
+        - 推理时(self.training=False)：detach 以节省显存
         """
-        # 将 W_init 参数列表传给 TTTCache
-        W_init_list = [w.data for w in self.W_init]  # 取数据，不带梯度计算图
+        # P0-1 FIX: 训练时保持梯度路径，推理时 detach
+        if self.training:
+            # 训练时：直接用 W_init，保持梯度连接
+            W_init_list = [w for w in self.W_init]
+        else:
+            # 推理时：detach 以节省显存（禁止用 .data，用 .detach() 代替）
+            W_init_list = [w.detach() for w in self.W_init]
         
         cache = TTTCache(
             W_init_list=W_init_list,
@@ -384,7 +393,11 @@ class TTTModule(nn.Module):
     
     def reset_cache(self, cache: TTTCache):
         """从 W_init 重置 cache"""
-        W_init_list = [w.data for w in self.W_init]
+        # P0-1 FIX: 训练时保持梯度路径，推理时 detach
+        if self.training:
+            W_init_list = [w for w in self.W_init]
+        else:
+            W_init_list = [w.detach() for w in self.W_init]
         cache.reset_from_init(W_init_list)
         
         if self.config.verbose and self.step_counter < self.config.log_first_n:
@@ -395,9 +408,11 @@ class TTTModule(nn.Module):
         y_pos = torch.arange(H, device=device).unsqueeze(1).float()
         x_pos = torch.arange(W, device=device).unsqueeze(0).float()
         
+        # 确保 C // 2 > 0 以避免除零错误
+        half_c = max(C // 2, 1)
         div_term = torch.exp(
-            torch.arange(0, C // 2, 2, device=device).float() * 
-            (-math.log(10000.0) / (C // 2))
+            torch.arange(0, half_c, 2, device=device).float() * 
+            (-math.log(10000.0) / half_c)
         )
         
         pe = torch.zeros(H, W, C, device=device)
@@ -558,6 +573,7 @@ class TTTModule(nn.Module):
         **重要**：
         - FO (First-Order): create_graph=False
         - 只更新 cache，不修改 W_init
+        - P0-2: 推理时强制 enable_grad() 并关闭 autocast，用 FP32 算梯度
         
         Args:
             vision_feats: [L, B, C] - 原始 neck output
@@ -568,6 +584,33 @@ class TTTModule(nn.Module):
         Returns:
             total_loss: 总损失
         """
+        # P0-2 FIX: 推理时强制开启梯度，并用 FP32 保证数值稳定
+        return self._step_update_impl(vision_feats, maskmem_features, ttt_cache, second_order)
+    
+    def _step_update_impl(
+        self,
+        vision_feats: torch.Tensor,
+        maskmem_features: torch.Tensor,
+        ttt_cache: TTTCache,
+        second_order: bool = False
+    ) -> torch.Tensor:
+        """实际的 step_update 实现，被 enable_grad 包裹"""
+        with torch.enable_grad():
+            with torch.cuda.amp.autocast(enabled=False):
+                # 转换为 FP32 以保证数值稳定
+                vision_feats = vision_feats.float()
+                maskmem_features = maskmem_features.float()
+                
+                return self._step_update_core(vision_feats, maskmem_features, ttt_cache, second_order)
+    
+    def _step_update_core(
+        self,
+        vision_feats: torch.Tensor,
+        maskmem_features: torch.Tensor,
+        ttt_cache: TTTCache,
+        second_order: bool = False
+    ) -> torch.Tensor:
+        """step_update 核心逻辑"""
         self.step_counter += 1
         ttt_cache.step += 1
         
@@ -627,12 +670,22 @@ class TTTModule(nn.Module):
             loss = F.mse_loss(pred, y_target)
             total_loss = total_loss + loss
             
+            # 调试信息
+            if verbose:
+                print(f"  Layer {i} grad debug:")
+                print(f"    loss.requires_grad: {loss.requires_grad}, loss.grad_fn: {loss.grad_fn}")
+                print(f"    pred.requires_grad: {pred.requires_grad}, pred.grad_fn: {pred.grad_fn}")
+                print(f"    W_old.requires_grad: {W_old.requires_grad}, W_old.is_leaf: {W_old.is_leaf}")
+                print(f"    x_norm.requires_grad: {x_norm.requires_grad}")
+            
             # 计算梯度 (FO: create_graph=False)
+            # P0-4 FIX: 训练时需要 retain_graph=True（外循环 backward 需要计算图）
+            # 推理时可以 retain_graph=False（节省显存）
             grad_W = torch.autograd.grad(
                 loss, 
                 W_old, 
                 create_graph=second_order,  # FO=False, SO=True
-                retain_graph=True
+                retain_graph=self.training  # 训练时保留图，推理时释放
             )[0]
             
             # 获取学习率
@@ -661,8 +714,15 @@ class TTTModule(nn.Module):
         # 更新计数
         ttt_cache.update_count += 1
         
-        # ============== 4. Truncated BPTT ==============
-        if ttt_cache.step % self.config.k_detach == 0:
+        # ============== 4. Truncated BPTT / 推理期 detach ==============
+        # P0-3 FIX: 推理时每次更新后 detach，防止跨帧积图
+        if not self.training:
+            # 推理时：每次更新后 detach（不积累计算图）
+            ttt_cache.detach_all()
+            if verbose:
+                print(f"[TTT Inference] Detached cache at step {ttt_cache.step}")
+        elif ttt_cache.step % self.config.k_detach == 0:
+            # 训练时：按 k_detach 周期做 TBPTT
             if verbose:
                 print(f"[TTT TBPTT] Detaching at step {ttt_cache.step}")
             ttt_cache.detach_all()

@@ -542,7 +542,9 @@ class SAM2VideoPredictor(SAM2Base):
             for frame_idx in obj_output_dict["cond_frame_outputs"]:
                 obj_output_dict["non_cond_frame_outputs"].pop(frame_idx, None)
 
-    @torch.inference_mode()
+    # P0-FIX: 改用 no_grad 以允许 TTT 内部的 enable_grad 工作
+    # inference_mode 会完全禁用梯度，即使 enable_grad 也无法恢复
+    @torch.no_grad()
     def propagate_in_video(
         self,
         inference_state,

@@ -956,13 +956,14 @@ class SAM2Base(torch.nn.Module):
              
              # Assuming batch size B=1 for simplicity or all reliable
              if is_reliable.all():
-                 # X: Raw image features. current_vision_feats[-1] is [B, C, H, W]
-                 X = current_vision_feats[-1].flatten(2).permute(0, 2, 1)
-                 # Y: Memory features. current_out["maskmem_features"] is [B, mem_dim, H, W]
-                 Y = current_out["maskmem_features"].flatten(2).permute(0, 2, 1)
-                 
+                 # TTT update: 匹配训练时的格式
+                 # current_vision_feats[-1] 已经是 [L, B, C] 格式，直接传入
                  if "ttt_cache" in output_dict:
-                     self.ttt_module.step_update(X, Y, output_dict["ttt_cache"])
+                     self.ttt_module.step_update(
+                         vision_feats=current_vision_feats[-1],  # [L, B, C]
+                         maskmem_features=current_out["maskmem_features"],  # [B, C_mem, H, W]
+                         ttt_cache=output_dict["ttt_cache"]
+                     )
         
         # Memory Pruning (Restricted Explicit Memory)
         # Only keep: Cond0, Last Frame (frame_idx), and Keyframe

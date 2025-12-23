@@ -4,4 +4,4 @@ defaults:
   - sam2.1_hiera_b+
 
 model:
-  num_maskmem: 2
+  num_maskmem: 3

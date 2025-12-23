@@ -6,7 +6,12 @@
 
 import argparse
 import os
+import logging
 from collections import defaultdict
+
+# 设置日志
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+logger = logging.getLogger(__name__)
 
 import numpy as np
 import torch
@@ -16,6 +21,63 @@ from sam2.build_sam import build_sam2_video_predictor
 
 # the PNG palette for DAVIS 2017 dataset
 DAVIS_PALETTE = b"\x00\x00\x00\x80\x00\x00\x00\x80\x00\x80\x80\x00\x00\x00\x80\x80\x00\x80\x00\x80\x80\x80\x80\x80@\x00\x00\xc0\x00\x00@\x80\x00\xc0\x80\x00@\x00\x80\xc0\x00\x80@\x80\x80\xc0\x80\x80\x00@\x00\x80@\x00\x00\xc0\x00\x80\xc0\x00\x00@\x80\x80@\x80\x00\xc0\x80\x80\xc0\x80@@\x00\xc0@\x00@\xc0\x00\xc0\xc0\x00@@\x80\xc0@\x80@\xc0\x80\xc0\xc0\x80\x00\x00@\x80\x00@\x00\x80@\x80\x80@\x00\x00\xc0\x80\x00\xc0\x00\x80\xc0\x80\x80\xc0@\x00@\xc0\x00@@\x80@\xc0\x80@@\x00\xc0\xc0\x00\xc0@\x80\xc0\xc0\x80\xc0\x00@@\x80@@\x00\xc0@\x80\xc0@\x00@\xc0\x80@\xc0\x00\xc0\xc0\x80\xc0\xc0@@@\xc0@@@\xc0@\xc0\xc0@@@\xc0\xc0@\xc0@\xc0\xc0\xc0\xc0\xc0 \x00\x00\xa0\x00\x00 \x80\x00\xa0\x80\x00 \x00\x80\xa0\x00\x80 \x80\x80\xa0\x80\x80`\x00\x00\xe0\x00\x00`\x80\x00\xe0\x80\x00`\x00\x80\xe0\x00\x80`\x80\x80\xe0\x80\x80 @\x00\xa0@\x00 \xc0\x00\xa0\xc0\x00 @\x80\xa0@\x80 \xc0\x80\xa0\xc0\x80`@\x00\xe0@\x00`\xc0\x00\xe0\xc0\x00`@\x80\xe0@\x80`\xc0\x80\xe0\xc0\x80 \x00@\xa0\x00@ \x80@\xa0\x80@ \x00\xc0\xa0\x00\xc0 \x80\xc0\xa0\x80\xc0`\x00@\xe0\x00@`\x80@\xe0\x80@`\x00\xc0\xe0\x00\xc0`\x80\xc0\xe0\x80\xc0 @@\xa0@@ \xc0@\xa0\xc0@ @\xc0\xa0@\xc0 \xc0\xc0\xa0\xc0\xc0`@@\xe0@@`\xc0@\xe0\xc0@`@\xc0\xe0@\xc0`\xc0\xc0\xe0\xc0\xc0\x00 \x00\x80 \x00\x00\xa0\x00\x80\xa0\x00\x00 \x80\x80 \x80\x00\xa0\x80\x80\xa0\x80@ \x00\xc0 \x00@\xa0\x00\xc0\xa0\x00@ \x80\xc0 \x80@\xa0\x80\xc0\xa0\x80\x00`\x00\x80`\x00\x00\xe0\x00\x80\xe0\x00\x00`\x80\x80`\x80\x00\xe0\x80\x80\xe0\x80@`\x00\xc0`\x00@\xe0\x00\xc0\xe0\x00@`\x80\xc0`\x80@\xe0\x80\xc0\xe0\x80\x00 @\x80 @\x00\xa0@\x80\xa0@\x00 \xc0\x80 \xc0\x00\xa0\xc0\x80\xa0\xc0@ @\xc0 @@\xa0@\xc0\xa0@@ \xc0\xc0 \xc0@\xa0\xc0\xc0\xa0\xc0\x00`@\x80`@\x00\xe0@\x80\xe0@\x00`\xc0\x80`\xc0\x00\xe0\xc0\x80\xe0\xc0@`@\xc0`@@\xe0@\xc0\xe0@@`\xc0\xc0`\xc0@\xe0\xc0\xc0\xe0\xc0  \x00\xa0 \x00 \xa0\x00\xa0\xa0\x00  \x80\xa0 \x80 \xa0\x80\xa0\xa0\x80` \x00\xe0 \x00`\xa0\x00\xe0\xa0\x00` \x80\xe0 \x80`\xa0\x80\xe0\xa0\x80 `\x00\xa0`\x00 \xe0\x00\xa0\xe0\x00 `\x80\xa0`\x80 \xe0\x80\xa0\xe0\x80``\x00\xe0`\x00`\xe0\x00\xe0\xe0\x00``\x80\xe0`\x80`\xe0\x80\xe0\xe0\x80  @\xa0 @ \xa0@\xa0\xa0@  \xc0\xa0 \xc0 \xa0\xc0\xa0\xa0\xc0` @\xe0 @`\xa0@\xe0\xa0@` \xc0\xe0 \xc0`\xa0\xc0\xe0\xa0\xc0 `@\xa0`@ \xe0@\xa0\xe0@ `\xc0\xa0`\xc0 \xe0\xc0\xa0\xe0\xc0``@\xe0`@`\xe0@\xe0\xe0@``\xc0\xe0`\xc0`\xe0\xc0\xe0\xe0\xc0"
+
+
+def print_ttt_config(predictor):
+    """打印 TTT 模块配置信息（P0-3 验收日志）"""
+    print("=" * 80)
+    print("[TTT Config] Checking TTT module...")
+    
+    # 尝试获取 ttt_module
+    ttt_module = None
+    if hasattr(predictor, 'model') and hasattr(predictor.model, 'ttt_module'):
+        ttt_module = predictor.model.ttt_module
+    elif hasattr(predictor, 'ttt_module'):
+        ttt_module = predictor.ttt_module
+    
+    if ttt_module is None:
+        print("  ⚠️ ttt_module NOT FOUND in predictor")
+        print("=" * 80)
+        return
+    
+    print("  ✓ ttt_module found")
+    
+    # 检查 state_dict
+    state_dict = ttt_module.state_dict()
+    w_init_keys = [k for k in state_dict.keys() if 'W_init' in k]
+    print(f"  - W_init parameters: {len(w_init_keys)} found")
+    if not w_init_keys:
+        print("  ⚠️ W_init NOT FOUND in state_dict!")
+    
+    # 打印配置
+    config = ttt_module.config
+    print(f"  - num_layers: {config.num_layers}")
+    print(f"  - num_heads: {config.num_heads}")
+    print(f"  - head_dim: {ttt_module.head_dim}")
+    print(f"  - inner_lr: {config.inner_lr}")
+    print(f"  - update_iou_thr: {config.update_iou_thr}")
+    print(f"  - k_detach: {config.k_detach}")
+    pooling = getattr(config, 'pooling', 'none')
+    print(f"  - pooling: {pooling}")
+    print(f"  - pool_size: {config.pool_size}")
+    print(f"  - hidden_dim: {ttt_module.hidden_dim}")
+    
+    # 计算 token 数
+    if pooling == "maxpool2x2":
+        token_count = 64 * 64 // 4
+    else:
+        token_count = 64 * 64
+    print(f"  - tokens after pooling: {token_count}")
+    
+    # 检查 alpha_global
+    if hasattr(ttt_module, 'alpha_global_param'):
+        import torch
+        alpha_val = torch.sigmoid(ttt_module.alpha_global_param) * 2.0
+        print(f"  - alpha_global: {alpha_val.item():.4f}")
+    elif hasattr(ttt_module, 'alpha_global'):
+        print(f"  - alpha_global: {ttt_module.alpha_global.item():.4f}")
+    
+    print("=" * 80)
 
 
 def load_ann_png(path):
@@ -113,80 +175,8 @@ def save_masks_to_dir(
             save_ann_png(output_mask_path, output_mask, output_palette)
 
 
-def run_ttt_update(predictor, inference_state):
-    """
-    Run Test-Time Training (TTT) update on the predictor using the conditioning frames
-    stored in the inference_state.
-    """
-    if not hasattr(predictor, 'ttt_module'):
-        return
-
-    print("[TTT] Resetting parameters...")
-    predictor.ttt_module.reset_parameters()
-    
-    # Identify all conditioning frames across all objects
-    all_cond_frames = set()
-    for obj_idx, out_dict in inference_state["output_dict_per_obj"].items():
-        all_cond_frames.update(out_dict["cond_frame_outputs"].keys())
-    
-    sorted_frames = sorted(list(all_cond_frames))
-    print(f"[TTT] Updating on frames: {sorted_frames}")
-    
-    # Enable gradients for TTT update
-    with torch.enable_grad():
-        for frame_idx in sorted_frames:
-            # Gather maskmem_features for all objects on this frame
-            maskmem_list = []
-            
-            # We iterate through objects to find those present in this frame
-            # Note: inference_state["output_dict_per_obj"] keys are object indices (0, 1, ...)
-            # which correspond to the batch dimension in predictor calls.
-            
-            # We need to be careful about the order. 
-            # predictor._get_image_feature expands to batch_size.
-            # We need to match the objects.
-            
-            # Let's collect valid objects for this frame
-            valid_obj_indices = []
-            for obj_idx, out_dict in inference_state["output_dict_per_obj"].items():
-                if frame_idx in out_dict["cond_frame_outputs"]:
-                    out = out_dict["cond_frame_outputs"][frame_idx]
-                    if "maskmem_features" in out and out["maskmem_features"] is not None:
-                        valid_obj_indices.append(obj_idx)
-                        maskmem_list.append(out["maskmem_features"])
-            
-            if not maskmem_list:
-                continue
-                
-            # Stack maskmem_features: [N_valid, C, H, W]
-            y = torch.cat(maskmem_list, dim=0)
-            
-            # Get image features
-            # We need the image features for the valid objects.
-            # Since the image is shared, we can just get it for one object and expand, 
-            # or get it for N_valid objects.
-            
-            # predictor._get_image_feature returns (image, backbone_out)
-            # where image is [B, 3, H, W] and backbone_out features are [B, C, H, W]
-            # We want B = len(valid_obj_indices)
-            
-            current_batch_size = len(valid_obj_indices)
-            image, backbone_out = predictor._get_image_feature(inference_state, frame_idx, current_batch_size)
-            _, vision_feats, _, _ = predictor._prepare_backbone_features(backbone_out)
-            
-            # vision_feats[-1] is [L, B, C]
-            vision_feat = vision_feats[-1]
-            
-            # Ensure devices match
-            y = y.to(vision_feat.device)
-            
-            # Run update
-            loss = predictor.ttt_module.step_update(vision_feat, y)
-            print(f"  [TTT] Frame {frame_idx}: Loss = {loss.item():.6f}")
-
-
-@torch.inference_mode()
-@torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+# Removed @torch.inference_mode() to allow step_update
+# Removed @torch.autocast - use local autocast inside propagate loop
 def vos_inference(
     predictor,
     base_video_dir,
@@ -291,7 +281,7 @@ def vos_inference(
         )
     
     # [TTT Injection]
-    run_ttt_update(predictor, inference_state)
+    # TTT update now handled internally by model
 
     # run propagation throughout the video and collect the results in a dict
     os.makedirs(os.path.join(output_mask_dir, video_name), exist_ok=True)
@@ -320,8 +310,8 @@ def vos_inference(
         )
 
 
-@torch.inference_mode()
-@torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+# Removed @torch.inference_mode() to allow step_update
+# Removed @torch.autocast - use local autocast inside propagate loop
 def vos_separate_inference_per_object(
     predictor,
     base_video_dir,
@@ -394,7 +384,7 @@ def vos_separate_inference_per_object(
             )
         
         # [TTT Injection]
-        run_ttt_update(predictor, inference_state)
+        # TTT update now handled internally by model
 
         # run propagation throughout the video and collect the results in a dict
         for out_frame_idx, _, out_mask_logits in predictor.propagate_in_video(
@@ -524,14 +514,23 @@ def main():
     hydra_overrides_extra = [
         "++model.non_overlap_masks=" + ("false" if args.per_obj_png_file else "true")
     ]
+    # P0-2: 禁止使用 vos_optimized（可能使用 inference_mode 导致 TTT update 失效）
+    if args.use_vos_optimized_video_predictor:
+        print("⚠️ WARNING: --use_vos_optimized_video_predictor is incompatible with TTT!")
+        print("TTT requires gradients for online adaptation. Forcing vos_optimized=False")
+        args.use_vos_optimized_video_predictor = False
+    
     predictor = build_sam2_video_predictor(
         config_file=args.sam2_cfg,
         ckpt_path=args.sam2_checkpoint,
         apply_postprocessing=args.apply_postprocessing,
         hydra_overrides_extra=hydra_overrides_extra,
-        vos_optimized=args.use_vos_optimized_video_predictor,
+        vos_optimized=False,  # 强制关闭 vos_optimized
     )
 
+    # P0-3: 打印 TTT 配置信息
+    print_ttt_config(predictor)
+    
     if args.use_all_masks:
         print("using all available masks in input_mask_dir as input to the SAM 2 model")
     else:
