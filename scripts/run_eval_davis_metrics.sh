@@ -10,7 +10,7 @@ export PYTHONPATH=.
 
 # Paths aligned with inference script
 GT_ROOT="/root/autodl-tmp/dataset_480p/DAVIS/Annotations/480p"
-PRED_ROOT="/root/autodl-tmp/output_davis_val_ttt_new"
+PRED_ROOT="/root/autodl-tmp/output_davis_val/output_davis_val_ttt_1223_2"
 
 echo "Running DAVIS evaluation..."
 echo "GT root: ${GT_ROOT}"

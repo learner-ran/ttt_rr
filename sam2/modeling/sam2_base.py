@@ -61,6 +61,9 @@ class SAM2Base(torch.nn.Module):
         # For r>1, the (self.num_maskmem - 1) non-conditioning memory frames consist of
         # (self.num_maskmem - 2) nearest frames from every r-th frames, plus the last frame.
         memory_temporal_stride_for_eval=1,
+        # Keyframe stride for restricted explicit memory in train/eval.
+        keyframe_stride_for_train=2,
+        keyframe_stride_for_eval=10,
         # whether to apply non-overlapping constraints on the object masks in the memory encoder during evaluation (to avoid/alleviate superposing masks)
         non_overlap_masks_for_mem_enc=False,
         # whether to cross-attend to object pointers from other frames (based on SAM output tokens) in the encoder
@@ -149,6 +152,8 @@ class SAM2Base(torch.nn.Module):
         self.binarize_mask_from_pts_for_mem_enc = binarize_mask_from_pts_for_mem_enc
         self.non_overlap_masks_for_mem_enc = non_overlap_masks_for_mem_enc
         self.memory_temporal_stride_for_eval = memory_temporal_stride_for_eval
+        self.keyframe_stride_for_train = keyframe_stride_for_train
+        self.keyframe_stride_for_eval = keyframe_stride_for_eval
         # On frames with mask input, whether to directly output the input mask without
         # using a SAM prompt encoder + mask decoder
         self.use_mask_input_as_output_without_sam = use_mask_input_as_output_without_sam
@@ -582,10 +587,15 @@ class SAM2Base(torch.nn.Module):
                 t_pos_and_prevs.append((self.num_maskmem - 1, out_last))
 
             # 2. Sparse Keyframe (max 1)
-            # Strategy: Find the most recent frame t such that t % 10 == 0 and t != last_frame_idx
+            # Strategy: Find the most recent frame t such that t % keyframe_stride == 0 and t != last_frame_idx
             # We search in non_cond_frame_outputs
             
             best_key_idx = None
+            keyframe_stride = (
+                self.keyframe_stride_for_train
+                if self.training
+                else self.keyframe_stride_for_eval
+            )
             
             # Get all available indices
             available_indices = list(output_dict["non_cond_frame_outputs"].keys())
@@ -595,7 +605,7 @@ class SAM2Base(torch.nn.Module):
             for idx in available_indices:
                 if idx == last_frame_idx:
                     continue
-                if idx % 10 == 0:
+                if idx % keyframe_stride == 0:
                     # Found the most recent keyframe candidate
                     best_key_idx = idx
                     break
@@ -976,13 +986,18 @@ class SAM2Base(torch.nn.Module):
         """
         Prune non_cond_frame_outputs to keep only:
         1. Last Frame (current_frame_idx)
-        2. Best Keyframe (most recent t % 10 == 0 with high score)
+        2. Best Keyframe (most recent t % keyframe_stride == 0 with high score)
         """
         if "non_cond_frame_outputs" not in output_dict:
             return
 
         # Identify Keyframe Candidate
-        is_keyframe_candidate = (current_frame_idx % 10 == 0)
+        keyframe_stride = (
+            self.keyframe_stride_for_train
+            if self.training
+            else self.keyframe_stride_for_eval
+        )
+        is_keyframe_candidate = (current_frame_idx % keyframe_stride == 0)
         score = torch.sigmoid(object_score_logits).max() # Max score across batch/pixels? No, object_score_logits is [B, 1] usually?
         # object_score_logits shape is [B, 1]
         is_high_quality = score > 0.85

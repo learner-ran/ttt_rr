@@ -29,9 +29,9 @@ ttt:
 
 dataset:
   # 服务器上的 DAVIS 数据集路径
-  img_folder: /root/autodl-tmp/dataset_480p/DAVIS/JPEGImages/480p
-  gt_folder: /root/autodl-tmp/dataset_480p/DAVIS/Annotations/480p
-  file_list_txt: null  # 设为 null，自动读取文件夹下的所有视频
+  img_folder: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/JPEGImages/Full-Resolution
+  gt_folder: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/Annotations/Full-Resolution
+  file_list_txt: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/ImageSets/2017/train.txt
   multiplier: 1
 
 # Video transforms (保持不变)
@@ -88,11 +88,11 @@ trainer:
       scalp: 1
       trunk:
         _target_: sam2.modeling.backbones.hieradet.Hiera
-        embed_dim: 112
+        embed_dim: 144
         num_heads: 2
-        stages: [2, 3, 16, 3]
-        global_att_blocks: [12, 16, 20]
-        window_pos_embed_bkg_spatial_size: [14, 14]
+        stages: [2, 6, 36, 4]
+        global_att_blocks: [23, 33, 43]
+        window_pos_embed_bkg_spatial_size: [7, 7]
         window_spec: [8, 4, 16, 8]
       neck:
         _target_: sam2.modeling.backbones.image_encoder.FpnNeck
@@ -103,7 +103,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [896, 448, 224, 112]
+        backbone_channel_list: [1152, 576, 288, 144]
         fpn_top_down_levels: [2, 3]
         fpn_interp_model: nearest
 
@@ -326,7 +326,7 @@ trainer:
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
         # 请确保此路径下有预训练权重，或者修改为绝对路径
-        checkpoint_path: /root/autodl-tmp/ttt_rr/checkpoints/sam2.1_hiera_base_plus.pt
+        checkpoint_path: /root/autodl-tmp/ttt_rr/checkpoints/sam2.1_hiera_large.pt
         ckpt_state_dict_keys: ['model']
 
 launcher:

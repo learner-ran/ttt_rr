@@ -10,7 +10,7 @@ cd /root/autodl-tmp/ttt_rr
 export PYTHONPATH=.
 
 # 配置（Hydra 格式：去掉 sam2/ 前缀和 .yaml 后缀）
-CONFIG="configs/sam2.1_training/sam2_ttt_davis"
+CONFIG="configs/sam2.1_training/sam2_ttt_davis_large"
 # 创建按时间命名的子目录
 TIMESTAMP=$(date +%Y%m%d_%H%M%S)
 export EXP_DIR="/root/autodl-tmp/runs/sam_ttt_davis/${TIMESTAMP}"
