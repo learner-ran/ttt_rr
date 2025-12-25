@@ -11,20 +11,20 @@ cd /root/autodl-tmp/ttt_rr
 export PYTHONPATH=.
 
 # 数据集路径
-DATASET_ROOT="/root/autodl-tmp/dataset_480p"
-BASE_VIDEO_DIR="${DATASET_ROOT}/DAVIS/JPEGImages/480p"
-INPUT_MASK_DIR="${DATASET_ROOT}/DAVIS/Annotations/480p"
+DATASET_ROOT="/root/autodl-tmp/data_set/DAVIS-2017-trainval"
+BASE_VIDEO_DIR="${DATASET_ROOT}/DAVIS/JPEGImages/Full-Resolution"
+INPUT_MASK_DIR="${DATASET_ROOT}/DAVIS/Annotations/Full-Resolution"
 VIDEO_LIST_FILE="${DATASET_ROOT}/DAVIS/ImageSets/2017/val.txt"
 
 # 模型配置（使用训练过的checkpoint）
-SAM2_CFG="sam2/configs/sam2.1/sam2_ttt_inference_b+.yaml"
-SAM2_CHECKPOINT="/root/autodl-tmp/runs/sam_ttt_davis/20251225_173731/checkpoints/checkpoint.pt"
+SAM2_CFG="sam2/configs/sam2.1/sam2_ttt_inference_l.yaml"
+SAM2_CHECKPOINT="/root/autodl-tmp/runs/sam_ttt_davis/20251225_184949/checkpoints/checkpoint.pt"
 CHECKPOINT_DIR="$(dirname "$SAM2_CHECKPOINT")"
 RUN_DIR="$(dirname "$CHECKPOINT_DIR")"
 LOG_FILE="${RUN_DIR}/inference.log"
 
 # 输出路径
-OUTPUT_MASK_DIR="/root/autodl-tmp/output_davis_val/output_davis_val_ttt_1225_1"
+OUTPUT_MASK_DIR="/root/autodl-tmp/output_davis_val/output_davis_val_ttt_1225_2"
 
 echo "Running TTT inference on DAVIS 2017 val set..."
 echo "Config: $SAM2_CFG"

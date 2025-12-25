@@ -316,6 +316,8 @@ trainer:
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
     save_freq: 0 # 0 only last checkpoint is saved.
+    save_best_loss_key: Losses/train_all_loss
+    save_best_loss_mode: min
     model_weight_initializer:
       _partial_: True
       _target_: training.utils.checkpoint_utils.load_state_dict_into_model

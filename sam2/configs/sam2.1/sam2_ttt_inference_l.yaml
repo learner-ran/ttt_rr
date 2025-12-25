@@ -1,0 +1,7 @@
+# @package _global_
+
+defaults:
+  - sam2.1_hiera_l
+
+model:
+  num_maskmem: 3

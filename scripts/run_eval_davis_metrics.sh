@@ -9,8 +9,8 @@ cd /root/autodl-tmp/ttt_rr
 export PYTHONPATH=.
 
 # Paths aligned with inference script
-GT_ROOT="/root/autodl-tmp/dataset_480p/DAVIS/Annotations/480p"
-PRED_ROOT="/root/autodl-tmp/output_davis_val/output_davis_val_ttt_1223_2"
+GT_ROOT="/root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/Annotations/Full-Resolution"
+PRED_ROOT="/root/autodl-tmp/output_davis_val/output_davis_val_ttt_1225_2"
 
 echo "Running DAVIS evaluation..."
 echo "GT root: ${GT_ROOT}"

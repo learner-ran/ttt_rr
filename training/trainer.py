@@ -113,6 +113,8 @@ class CheckpointConf:
     save_list: List[int] = field(default_factory=list)
     model_weight_initializer: Any = None
     save_best_meters: List[str] = None
+    save_best_loss_key: Optional[str] = None
+    save_best_loss_mode: str = "min"
     skip_saving_parameters: List[str] = field(default_factory=list)
     initialize_after_preemption: Optional[bool] = None
     # if not None, training will be resumed from this checkpoint
@@ -349,6 +351,7 @@ class Trainer:
             "steps": self.steps,
             "time_elapsed": self.time_elapsed_meter.val,
             "best_meter_values": self.best_meter_values,
+            "best_loss_values": self.best_loss_values,
         }
         if self.optim_conf.amp.enabled:
             checkpoint["scaler"] = self.scaler.state_dict()
@@ -440,6 +443,7 @@ class Trainer:
             self.scaler.load_state_dict(checkpoint["scaler"])
 
         self.best_meter_values = checkpoint.get("best_meter_values", {})
+        self.best_loss_values = checkpoint.get("best_loss_values", {})
 
         if "train_dataset" in checkpoint and self.train_dataset is not None:
             self.train_dataset.load_checkpoint_state(checkpoint["train_dataset"])
@@ -541,7 +545,8 @@ class Trainer:
                     f.write(json.dumps(outs) + "\n")
 
             # Save checkpoint before validating
-            self.save_checkpoint(self.epoch + 1)
+            if self.checkpoint_conf.save_best_loss_key is None:
+                self.save_checkpoint(self.epoch + 1)
 
             del dataloader
             gc.collect()
@@ -828,9 +833,41 @@ class Trainer:
         for k, v in extra_loss_mts.items():
             out_dict[k] = v.avg
         out_dict.update(self._get_trainer_state(phase))
+        self._maybe_save_best_loss_checkpoint(out_dict, phase)
         logging.info(f"Losses and meters: {out_dict}")
         self._reset_meters([phase])
         return out_dict
+
+    def _maybe_save_best_loss_checkpoint(self, out_dict, phase):
+        key = self.checkpoint_conf.save_best_loss_key
+        if key is None:
+            return
+        if key not in out_dict:
+            logging.warning(
+                f"Best-loss checkpoint key '{key}' not found in epoch stats."
+            )
+            return
+        loss_val = float(out_dict[key])
+        best_val = self.best_loss_values.get(key)
+        mode = self.checkpoint_conf.save_best_loss_mode
+        if mode not in ("min", "max"):
+            logging.warning(
+                f"Unsupported save_best_loss_mode '{mode}', falling back to 'min'."
+            )
+            mode = "min"
+        is_better = (
+            best_val is None
+            or (mode == "min" and loss_val < best_val)
+            or (mode == "max" and loss_val > best_val)
+        )
+        if not is_better:
+            return
+        self.best_loss_values[key] = loss_val
+        if self.distributed_rank == 0:
+            logging.info(
+                f"New best {key}={loss_val:.6g} (mode={mode}); saving checkpoint.pt"
+            )
+        self.save_checkpoint(self.epoch + 1, ["checkpoint"])
 
     def _log_sync_data_times(self, phase, data_times):
         data_times = all_reduce_max(torch.tensor(data_times)).tolist()
@@ -1007,6 +1044,7 @@ class Trainer:
 
         self.meters = {}
         self.best_meter_values = {}
+        self.best_loss_values = {}
         if self.meters_conf:
             self.meters = instantiate(self.meters_conf, _convert_="all")
 
