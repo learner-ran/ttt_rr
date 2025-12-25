@@ -47,6 +47,7 @@ class TTTConfig:
     # Debug/logging
     verbose: bool = True
     log_first_n: int = 5  # 前 N 个 iter 打印详细日志
+    alpha_log_every: int = 200  # 打印 alpha 的间隔（step）
     
     # Second order gradient
     second_order: bool = False
@@ -200,7 +201,7 @@ class TTTBlockStateless(nn.Module):
         self.ttt_linear = TTTLinearStateless(dim, num_heads)
         # Sigmoid 参数化：alpha_eff = sigmoid(alpha_param) * alpha_max
         # 初始化为 -4 使 sigmoid(-4)≈0.018，小但非零，有梯度
-        self.alpha_param = nn.Parameter(torch.tensor([-4.0]))
+        self.alpha_param = nn.Parameter(torch.tensor([-2.94]))
         
         # MLP path
         self.ln2 = nn.LayerNorm(dim)
@@ -291,8 +292,8 @@ class TTTModule(nn.Module):
         self.proj_mem = nn.Linear(mem_dim, hidden_dim)
         
         # Global fusion alpha (sigmoid 参数化)
-        # 初始化为 -4 使 sigmoid(-4)≈0.018，小但非零
-        self.alpha_global_param = nn.Parameter(torch.tensor([-4.0]))
+        # 初始化为 -2.94 使 sigmoid(-2.94)≈0.10，小但非零
+        self.alpha_global_param = nn.Parameter(torch.tensor([-2.94]))
         
         # Per-layer learnable lr (可选)
         if config.learnable_lr:
@@ -732,6 +733,15 @@ class TTTModule(nn.Module):
             print(f"[TTT Update Complete] Total loss: {total_loss.item():.6f}")
             print(f"  delta_norms: {[f'{d:.6f}' for d in delta_norms]}")
             print(f"  Update count: {ttt_cache.update_count}/{ttt_cache.step}")
+        if self.config.alpha_log_every and (
+            ttt_cache.step == 1 or ttt_cache.step % self.config.alpha_log_every == 0
+        ):
+            layer_alphas = [layer.alpha.item() for layer in self.layers]
+            print(
+                f"[TTT Alpha] step={ttt_cache.step}, "
+                f"alpha_global={self.alpha_global.item():.4f}, "
+                f"layer_alpha={[f'{a:.4f}' for a in layer_alphas]}"
+            )
         
         return total_loss
     

@@ -498,10 +498,20 @@ class SAM2Train(SAM2Base):
                 current_out["ttt_loss"] = ttt_loss
                 
                 # 日志
-                if verbose or self.ttt_module.step_counter % 100 == 0:
+                log_every = getattr(self.ttt_module.config, "alpha_log_every", 200)
+                should_log = verbose or (
+                    log_every
+                    and (
+                        self.ttt_module.step_counter == 1
+                        or self.ttt_module.step_counter % log_every == 0
+                    )
+                )
+                if should_log:
                     cache_state = ttt_cache.get_state_dict()
-                    print(f"[TTT Update Done] frame={frame_idx}, loss={ttt_loss.item():.6f}, "
-                          f"step={cache_state['step']}, update_count={cache_state['update_count']}")
+                    print(
+                        f"[TTT Update Done] frame={frame_idx}, loss={ttt_loss.item():.6f}, "
+                        f"step={cache_state['step']}, update_count={cache_state['update_count']}"
+                    )
 
         return current_out
 

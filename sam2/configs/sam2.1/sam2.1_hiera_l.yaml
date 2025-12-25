@@ -86,6 +86,7 @@ model:
         num_layers: 2
 
   num_maskmem: 7
+  use_full_memory: true
   image_size: 1024
   # apply scaled sigmoid on mask logits for memory encoder, and directly feed input mask as output mask
   sigmoid_scale_for_mem_enc: 20.0

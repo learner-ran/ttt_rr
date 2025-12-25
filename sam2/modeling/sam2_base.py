@@ -64,6 +64,8 @@ class SAM2Base(torch.nn.Module):
         # Keyframe stride for restricted explicit memory in train/eval.
         keyframe_stride_for_train=2,
         keyframe_stride_for_eval=10,
+        # Use the original SAM2 memory stream instead of restricted {cond0, last, keyframe}.
+        use_full_memory=False,
         # whether to apply non-overlapping constraints on the object masks in the memory encoder during evaluation (to avoid/alleviate superposing masks)
         non_overlap_masks_for_mem_enc=False,
         # whether to cross-attend to object pointers from other frames (based on SAM output tokens) in the encoder
@@ -154,6 +156,7 @@ class SAM2Base(torch.nn.Module):
         self.memory_temporal_stride_for_eval = memory_temporal_stride_for_eval
         self.keyframe_stride_for_train = keyframe_stride_for_train
         self.keyframe_stride_for_eval = keyframe_stride_for_eval
+        self.use_full_memory = use_full_memory
         # On frames with mask input, whether to directly output the input mask without
         # using a SAM prompt encoder + mask decoder
         self.use_mask_input_as_output_without_sam = use_mask_input_as_output_without_sam
@@ -193,6 +196,9 @@ class SAM2Base(torch.nn.Module):
             mem_dim=self.mem_dim,
             num_layers=4,
             num_heads=4,
+            verbose=False,
+            log_first_n=0,
+            alpha_log_every=200,
         )
         
         self.ttt_module = TTTModule(
@@ -207,7 +213,10 @@ class SAM2Base(torch.nn.Module):
         print(f"  num_maskmem: {self.num_maskmem}")
         print(f"  hidden_dim: {self.hidden_dim}")
         print(f"  mem_dim: {self.mem_dim}")
-        assert self.num_maskmem >= 3, f"num_maskmem must be >= 3 for Cond0+Last+Keyframe, got {self.num_maskmem}"
+        if not self.use_full_memory:
+            assert (
+                self.num_maskmem >= 3
+            ), f"num_maskmem must be >= 3 for Cond0+Last+Keyframe, got {self.num_maskmem}"
         print("=" * 60)
         
         # Freeze Image Encoder
@@ -569,53 +578,110 @@ class SAM2Base(torch.nn.Module):
                 frame_idx, cond_outputs, self.max_cond_frames_in_attn
             )
             t_pos_and_prevs = [(0, out) for out in selected_cond_outputs.values()]
-            # Restricted Explicit Memory Stream
-            # Only retrieve {cond0, last, keyframe}
-            
-            # 1. Last Frame (t-1)
-            if not track_in_reverse:
-                last_frame_idx = frame_idx - 1
-            else:
-                last_frame_idx = frame_idx + 1
-            
-            out_last = output_dict["non_cond_frame_outputs"].get(last_frame_idx, None)
-            if out_last is None:
-                out_last = unselected_cond_outputs.get(last_frame_idx, None)
-            
-            if out_last is not None:
-                # Assign t_pos = num_maskmem - 1 (closest)
-                t_pos_and_prevs.append((self.num_maskmem - 1, out_last))
 
-            # 2. Sparse Keyframe (max 1)
-            # Strategy: Find the most recent frame t such that t % keyframe_stride == 0 and t != last_frame_idx
-            # We search in non_cond_frame_outputs
-            
-            best_key_idx = None
-            keyframe_stride = (
-                self.keyframe_stride_for_train
-                if self.training
-                else self.keyframe_stride_for_eval
-            )
-            
-            # Get all available indices
-            available_indices = list(output_dict["non_cond_frame_outputs"].keys())
-            # Sort them
-            available_indices.sort(reverse=not track_in_reverse)
-            
-            for idx in available_indices:
-                if idx == last_frame_idx:
-                    continue
-                if idx % keyframe_stride == 0:
-                    # Found the most recent keyframe candidate
-                    best_key_idx = idx
-                    break
-            
-            if best_key_idx is not None:
-                out_key = output_dict["non_cond_frame_outputs"][best_key_idx]
-                # Assign t_pos = num_maskmem - 2 (second closest slot)
-                # Ensure we don't overwrite if num_maskmem is small
-                if self.num_maskmem >= 2:
-                    t_pos_and_prevs.append((self.num_maskmem - 2, out_key))
+            if self.use_full_memory:
+                # Original SAM2 memory stream (up to num_maskmem-1 frames)
+                if not track_in_reverse:
+                    last_frame_idx = frame_idx - 1
+                else:
+                    last_frame_idx = frame_idx + 1
+
+                prevs = []
+                out_last = output_dict["non_cond_frame_outputs"].get(last_frame_idx, None)
+                if out_last is None:
+                    out_last = unselected_cond_outputs.get(last_frame_idx, None)
+                if out_last is not None:
+                    prevs.append(out_last)
+
+                available_indices = list(output_dict["non_cond_frame_outputs"].keys())
+                available_indices.sort(reverse=not track_in_reverse)
+
+                if self.training or self.memory_temporal_stride_for_eval <= 1:
+                    for idx in available_indices:
+                        if idx == last_frame_idx:
+                            continue
+                        prev = output_dict["non_cond_frame_outputs"].get(idx, None)
+                        if prev is None:
+                            prev = unselected_cond_outputs.get(idx, None)
+                        if prev is None:
+                            continue
+                        prevs.append(prev)
+                        if len(prevs) >= self.num_maskmem - 1:
+                            break
+                else:
+                    stride = self.memory_temporal_stride_for_eval
+                    for idx in available_indices:
+                        if idx == last_frame_idx:
+                            continue
+                        if track_in_reverse:
+                            dist = idx - frame_idx
+                        else:
+                            dist = frame_idx - idx
+                        if dist <= 0 or dist % stride != 0:
+                            continue
+                        prev = output_dict["non_cond_frame_outputs"].get(idx, None)
+                        if prev is None:
+                            prev = unselected_cond_outputs.get(idx, None)
+                        if prev is None:
+                            continue
+                        prevs.append(prev)
+                        if len(prevs) >= self.num_maskmem - 1:
+                            break
+
+                prevs = prevs[: max(self.num_maskmem - 1, 0)]
+                for i, prev in enumerate(prevs):
+                    t_pos = self.num_maskmem - 1 - i
+                    if t_pos <= 0:
+                        continue
+                    t_pos_and_prevs.append((t_pos, prev))
+            else:
+                # Restricted Explicit Memory Stream
+                # Only retrieve {cond0, last, keyframe}
+
+                # 1. Last Frame (t-1)
+                if not track_in_reverse:
+                    last_frame_idx = frame_idx - 1
+                else:
+                    last_frame_idx = frame_idx + 1
+
+                out_last = output_dict["non_cond_frame_outputs"].get(last_frame_idx, None)
+                if out_last is None:
+                    out_last = unselected_cond_outputs.get(last_frame_idx, None)
+
+                if out_last is not None:
+                    # Assign t_pos = num_maskmem - 1 (closest)
+                    t_pos_and_prevs.append((self.num_maskmem - 1, out_last))
+
+                # 2. Sparse Keyframe (max 1)
+                # Strategy: Find the most recent frame t such that t % keyframe_stride == 0 and t != last_frame_idx
+                # We search in non_cond_frame_outputs
+
+                best_key_idx = None
+                keyframe_stride = (
+                    self.keyframe_stride_for_train
+                    if self.training
+                    else self.keyframe_stride_for_eval
+                )
+
+                # Get all available indices
+                available_indices = list(output_dict["non_cond_frame_outputs"].keys())
+                # Sort them
+                available_indices.sort(reverse=not track_in_reverse)
+
+                for idx in available_indices:
+                    if idx == last_frame_idx:
+                        continue
+                    if idx % keyframe_stride == 0:
+                        # Found the most recent keyframe candidate
+                        best_key_idx = idx
+                        break
+
+                if best_key_idx is not None:
+                    out_key = output_dict["non_cond_frame_outputs"][best_key_idx]
+                    # Assign t_pos = num_maskmem - 2 (second closest slot)
+                    # Ensure we don't overwrite if num_maskmem is small
+                    if self.num_maskmem >= 2:
+                        t_pos_and_prevs.append((self.num_maskmem - 2, out_key))
 
             for t_pos, prev in t_pos_and_prevs:
                 if prev is None:
@@ -988,6 +1054,8 @@ class SAM2Base(torch.nn.Module):
         1. Last Frame (current_frame_idx)
         2. Best Keyframe (most recent t % keyframe_stride == 0 with high score)
         """
+        if self.use_full_memory:
+            return
         if "non_cond_frame_outputs" not in output_dict:
             return
 

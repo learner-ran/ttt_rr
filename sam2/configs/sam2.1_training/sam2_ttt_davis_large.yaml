@@ -6,7 +6,7 @@ scratch:
   num_train_workers: 8
   num_frames: 8        # P0: 配合 pooling+TBPTT，使用 8 帧
   max_num_objects: 3
-  base_lr: 1.0e-4      # 基础学习率，从 1e-5 提高到 1e-4 以加速新模块收敛
+  base_lr: 1.0e-5      # 基础学习率，从 1e-5 提高到 1e-4 以加速新模块收敛
   vision_lr: 0.0       # 视觉编码器学习率设为0
   phases_per_epoch: 1
   num_epochs: 50       # DAVIS 数据集较小，可以适当增加轮数
@@ -166,7 +166,8 @@ trainer:
           num_layers: 2
 
     # 记忆帧数量配置
-    num_maskmem: 3
+    num_maskmem: 7
+    use_full_memory: true
     image_size: ${scratch.resolution}
     sigmoid_scale_for_mem_enc: 20.0
     sigmoid_bias_for_mem_enc: -10.0

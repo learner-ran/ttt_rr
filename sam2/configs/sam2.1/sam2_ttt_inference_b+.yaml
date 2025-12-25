@@ -4,4 +4,5 @@ defaults:
   - sam2.1_hiera_b+
 
 model:
-  num_maskmem: 3
+  num_maskmem: 7
+  use_full_memory: true
