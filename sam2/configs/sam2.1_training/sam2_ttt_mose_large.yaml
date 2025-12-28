@@ -28,10 +28,10 @@ ttt:
   second_order: false        # 是否使用二阶梯度（MAML full version）
 
 dataset:
-  # 服务器上的 DAVIS 数据集路径
-  img_folder: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/JPEGImages/Full-Resolution
-  gt_folder: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/Annotations/Full-Resolution
-  file_list_txt: /root/autodl-tmp/data_set/DAVIS-2017-trainval/DAVIS/ImageSets/2017/train.txt
+  # MOSE 训练集路径（80% train）
+  img_folder: /root/autodl-tmp/data_set/MOSE/train/train/JPEGImages
+  gt_folder: /root/autodl-tmp/data_set/MOSE/train/train/Annotations
+  file_list_txt: /root/autodl-tmp/ttt_rr/training/assets/MOSE_train80_list.txt
   multiplier: 1
 
 # Video transforms (保持不变)
@@ -337,7 +337,7 @@ launcher:
   gpus_per_node: 1  # 默认为1，运行时可通过命令行覆盖
   # Use environment variable EXP_DIR to avoid overwriting previous runs.
   # If EXP_DIR is not set, default to a timestamped folder under ./logs.
-  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_davis_run2}
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_mose_run1}
 
 submitit:
   partition: null

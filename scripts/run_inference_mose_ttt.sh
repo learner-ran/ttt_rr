@@ -10,11 +10,11 @@ conda activate ttt_sam
 cd /root/autodl-tmp/ttt_rr
 export PYTHONPATH=.
 
-# 数据集路径
-DATASET_ROOT="/root/autodl-tmp/data_set/DAVIS-2017-trainval"
-BASE_VIDEO_DIR="${DATASET_ROOT}/DAVIS/JPEGImages/Full-Resolution"
-INPUT_MASK_DIR="${DATASET_ROOT}/DAVIS/Annotations/Full-Resolution"
-VIDEO_LIST_FILE="${DATASET_ROOT}/DAVIS/ImageSets/2017/val.txt"
+# 数据集路径（MOSE train 中的 20% 作为验证）
+DATASET_ROOT="/root/autodl-tmp/data_set/MOSE/train/train"
+BASE_VIDEO_DIR="${DATASET_ROOT}/JPEGImages"
+INPUT_MASK_DIR="${DATASET_ROOT}/Annotations"
+VIDEO_LIST_FILE="/root/autodl-tmp/ttt_rr/training/assets/MOSE_val20_list.txt"
 
 # 模型配置（使用训练过的checkpoint）
 SAM2_CFG="sam2/configs/sam2.1/sam2_ttt_inference_l.yaml"
@@ -24,9 +24,9 @@ RUN_DIR="$(dirname "$CHECKPOINT_DIR")"
 LOG_FILE="${RUN_DIR}/inference.log"
 
 # 输出路径
-OUTPUT_MASK_DIR="/root/autodl-tmp/output_davis_val/output_davis_val_ttt_1225_3"
+OUTPUT_MASK_DIR="/root/autodl-tmp/output_mose_val/output_mose_val_ttt"
 
-echo "Running TTT inference on DAVIS 2017 val set..."
+echo "Running TTT inference on MOSE 20% val split..."
 echo "Config: $SAM2_CFG"
 echo "Checkpoint: $SAM2_CHECKPOINT"
 echo "Output: $OUTPUT_MASK_DIR"
