@@ -16,17 +16,16 @@ BASE_VIDEO_DIR="${DATASET_ROOT}/JPEGImages"
 INPUT_MASK_DIR="${DATASET_ROOT}/Annotations"
 VIDEO_LIST_FILE="/root/autodl-tmp/ttt_rr/training/assets/MOSE_val20_list.txt"
 
-# 模型配置（使用训练过的checkpoint）
-SAM2_CFG="sam2/configs/sam2.1/sam2_ttt_inference_l.yaml"
+# 模型配置（禁用 TTT 分支，使用训练过的 checkpoint）
+SAM2_CFG="sam2/configs/sam2.1/sam2_ttt_inference_l_no_ttt.yaml"
 SAM2_CHECKPOINT="/root/autodl-tmp/runs/sam_ttt_mose/20251228_170422/checkpoints/checkpoint.pt"
-CHECKPOINT_DIR="$(dirname "$SAM2_CHECKPOINT")"
-RUN_DIR="$(dirname "$CHECKPOINT_DIR")"
-LOG_FILE="${RUN_DIR}/inference.log"
 
 # 输出路径
-OUTPUT_MASK_DIR="/root/autodl-tmp/output_mose_val/output_mose_val_ttt1228_1"
+OUTPUT_MASK_DIR="${OUTPUT_MASK_DIR:-/root/autodl-tmp/output_mose_val/output_mose_val_no_ttt}"
+LOG_FILE="${OUTPUT_MASK_DIR}/inference.log"
+mkdir -p "$OUTPUT_MASK_DIR"
 
-echo "Running TTT inference on MOSE 20% val split..."
+echo "Running SAM 2.1 inference (TTT disabled) on MOSE 20% val split..."
 echo "Config: $SAM2_CFG"
 echo "Checkpoint: $SAM2_CHECKPOINT"
 echo "Output: $OUTPUT_MASK_DIR"
@@ -34,7 +33,7 @@ echo "Dataset: $BASE_VIDEO_DIR"
 echo "Log: $LOG_FILE"
 
 # 运行推理
-python tools/vos_inference_ttt.py \
+python tools/vos_inference.py \
     --sam2_cfg $SAM2_CFG \
     --sam2_checkpoint $SAM2_CHECKPOINT \
     --base_video_dir $BASE_VIDEO_DIR \

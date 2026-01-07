@@ -99,6 +99,8 @@ class SAM2Base(torch.nn.Module):
         no_obj_embed_spatial: bool = False,
         # extra arguments used to construct the SAM mask decoder; if not None, it should be a dict of kwargs to be passed into `MaskDecoder` class.
         sam_mask_decoder_extra_args=None,
+        # whether to enable TTT module (set False to mimic original SAM2 behavior)
+        use_ttt: bool = True,
         compile_image_encoder: bool = False,
     ):
         super().__init__()
@@ -157,6 +159,7 @@ class SAM2Base(torch.nn.Module):
         self.keyframe_stride_for_train = keyframe_stride_for_train
         self.keyframe_stride_for_eval = keyframe_stride_for_eval
         self.use_full_memory = use_full_memory
+        self.use_ttt = use_ttt
         # On frames with mask input, whether to directly output the input mask without
         # using a SAM prompt encoder + mask decoder
         self.use_mask_input_as_output_without_sam = use_mask_input_as_output_without_sam
@@ -191,21 +194,24 @@ class SAM2Base(torch.nn.Module):
         # ============================================================================
         # TTT Module 初始化 (Cache-Based Meta-Learning)
         # ============================================================================
-        ttt_config = TTTConfig(
-            hidden_dim=self.hidden_dim,
-            mem_dim=self.mem_dim,
-            num_layers=4,
-            num_heads=4,
-            verbose=False,
-            log_first_n=0,
-            alpha_log_every=200,
-        )
-        
-        self.ttt_module = TTTModule(
-            hidden_dim=self.hidden_dim,
-            mem_dim=self.mem_dim,
-            config=ttt_config
-        )
+        if self.use_ttt:
+            ttt_config = TTTConfig(
+                hidden_dim=self.hidden_dim,
+                mem_dim=self.mem_dim,
+                num_layers=4,
+                num_heads=4,
+                verbose=False,
+                log_first_n=0,
+                alpha_log_every=200,
+            )
+            
+            self.ttt_module = TTTModule(
+                hidden_dim=self.hidden_dim,
+                mem_dim=self.mem_dim,
+                config=ttt_config
+            )
+        else:
+            self.ttt_module = None
         
         # 关键配置打印
         print("=" * 60)
@@ -870,33 +876,34 @@ class SAM2Base(torch.nn.Module):
             # ============================================================================
             # TTT Stream (Parallel) - Using Cache-Based Meta-Learning
             # ============================================================================
-            # 确保 output_dict 中有 ttt_cache
-            if "ttt_cache" not in output_dict or output_dict["ttt_cache"] is None:
-                B = current_vision_feats[-1].shape[1]
-                output_dict["ttt_cache"] = self.ttt_module.create_cache(
-                    batch_size=B,
-                    device=current_vision_feats[-1].device,
-                    dtype=current_vision_feats[-1].dtype
-                )
-                if self.ttt_module.config.verbose:
-                    print(f"[TTT] Created new cache for batch_size={B}")
-            
-            ttt_cache = output_dict["ttt_cache"]
-            
-            # TTT Forward: 使用 cache 中的 W
-            feat_ttt = self.ttt_module(current_vision_feats[-1], ttt_cache)  # [B, C, H, W]
-            
-            # Fusion Gate
-            gate = 1.0
-            if frame_idx == 0:
-                gate = 0.0  # 第一帧不使用 TTT 输出
-            
-            # 日志
-            if self.ttt_module.step_counter < self.ttt_module.config.log_first_n:
-                print(f"[TTT Fusion] frame={frame_idx}, gate={gate}, alpha={self.ttt_module.alpha_global.item():.4f}")
-            
-            # Fusion: pix_feat = memory_attention_out + alpha * gate * ttt_out
-            pix_feat = pix_feat + self.ttt_module.alpha_global * gate * feat_ttt
+            if self.use_ttt:
+                # 确保 output_dict 中有 ttt_cache
+                if "ttt_cache" not in output_dict or output_dict["ttt_cache"] is None:
+                    B = current_vision_feats[-1].shape[1]
+                    output_dict["ttt_cache"] = self.ttt_module.create_cache(
+                        batch_size=B,
+                        device=current_vision_feats[-1].device,
+                        dtype=current_vision_feats[-1].dtype
+                    )
+                    if self.ttt_module.config.verbose:
+                        print(f"[TTT] Created new cache for batch_size={B}")
+                
+                ttt_cache = output_dict["ttt_cache"]
+                
+                # TTT Forward: 使用 cache 中的 W
+                feat_ttt = self.ttt_module(current_vision_feats[-1], ttt_cache)  # [B, C, H, W]
+                
+                # Fusion Gate
+                gate = 1.0
+                if frame_idx == 0:
+                    gate = 0.0  # 第一帧不使用 TTT 输出
+                
+                # 日志
+                if self.ttt_module.step_counter < self.ttt_module.config.log_first_n:
+                    print(f"[TTT Fusion] frame={frame_idx}, gate={gate}, alpha={self.ttt_module.alpha_global.item():.4f}")
+                
+                # Fusion: pix_feat = memory_attention_out + alpha * gate * ttt_out
+                pix_feat = pix_feat + self.ttt_module.alpha_global * gate * feat_ttt
 
             # apply SAM-style segmentation head
             # here we might feed previously predicted low-res SAM mask logits into the SAM mask decoder,
@@ -1007,7 +1014,7 @@ class SAM2Base(torch.nn.Module):
         )
 
         # TTT Update
-        if run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
+        if self.use_ttt and run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
              # Gating
              scores = torch.sigmoid(object_score_logits)
              is_reliable = scores > 0.5 

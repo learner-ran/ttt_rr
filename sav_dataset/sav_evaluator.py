@@ -53,7 +53,7 @@ parser.add_argument(
     help="Path to a folder containing folders of masks to be evaluated, with exactly the same structure as gt_root",
 )
 parser.add_argument(
-    "-n", "--num_processes", default=16, type=int, help="Number of concurrent processes"
+    "-n", "--num_processes", default=20, type=int, help="Number of concurrent processes"
 )
 parser.add_argument(
     "-s",

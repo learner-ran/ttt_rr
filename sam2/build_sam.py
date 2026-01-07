@@ -189,11 +189,14 @@ def build_sam2_video_predictor_hf(model_id, **kwargs):
 def _load_checkpoint(model, ckpt_path):
     if ckpt_path is not None:
         sd = torch.load(ckpt_path, map_location="cpu", weights_only=True)["model"]
-        missing_keys, unexpected_keys = model.load_state_dict(sd)
+        missing_keys, unexpected_keys = model.load_state_dict(sd, strict=False)
         if missing_keys:
             logging.error(missing_keys)
             raise RuntimeError()
         if unexpected_keys:
-            logging.error(unexpected_keys)
-            raise RuntimeError()
+            unexpected_non_ttt = [k for k in unexpected_keys if not k.startswith("ttt_module.")]
+            if unexpected_non_ttt:
+                logging.error(unexpected_keys)
+                raise RuntimeError()
+            logging.warning("Ignoring unexpected TTT module keys from checkpoint")
         logging.info("Loaded checkpoint sucessfully")

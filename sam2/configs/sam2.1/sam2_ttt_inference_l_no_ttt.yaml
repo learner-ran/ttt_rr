@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - sam2.1_hiera_l
+
+model:
+  num_maskmem: 7
+  use_full_memory: true
+  use_ttt: false
