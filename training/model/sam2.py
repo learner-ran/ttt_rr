@@ -108,7 +108,7 @@ class SAM2Train(SAM2Base):
         # ============================================================================
         # Reset TTT for new video/batch
         # ============================================================================
-        if hasattr(self, 'ttt_module'):
+        if getattr(self, "use_ttt", False) and self.ttt_module is not None:
             self.ttt_module.reset_parameters()
             self.ttt_module.step_counter = 0
             self.ttt_module.global_step += 1
@@ -458,7 +458,13 @@ class SAM2Train(SAM2Base):
         # ============================================================================
         # TTT Update (Meta-Learning Inner Loop)
         # ============================================================================
-        if run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
+        if (
+            self.use_ttt
+            and self.ttt_module is not None
+            and run_mem_encoder
+            and "maskmem_features" in current_out
+            and current_out["maskmem_features"] is not None
+        ):
             # 获取 IoU 用于门控（来自 mask decoder 的 IoU head）
             if "multistep_pred_ious" in current_out and len(current_out["multistep_pred_ious"]) > 0:
                 pred_iou = current_out["multistep_pred_ious"][-1]  # [B, num_masks]
@@ -491,7 +497,8 @@ class SAM2Train(SAM2Base):
                     vision_feats=current_vision_feats[-1],  # [L, B, C]
                     maskmem_features=current_out["maskmem_features"],  # [B, C_mem, H, W]
                     ttt_cache=ttt_cache,
-                    second_order=getattr(self.ttt_module.config, 'second_order', False)
+                    second_order=getattr(self.ttt_module.config, 'second_order', False),
+                    anchor_obj_ptr=current_out.get("obj_ptr"),
                 )
                 
                 # 记录 loss 到输出
@@ -512,6 +519,18 @@ class SAM2Train(SAM2Base):
                         f"[TTT Update Done] frame={frame_idx}, loss={ttt_loss.item():.6f}, "
                         f"step={cache_state['step']}, update_count={cache_state['update_count']}"
                     )
+
+                object_score_for_gate = None
+                if (
+                    "multistep_object_score_logits" in current_out
+                    and len(current_out["multistep_object_score_logits"]) > 0
+                ):
+                    object_score_for_gate = current_out["multistep_object_score_logits"][-1]
+                self.ttt_module.update_cache_reliability(
+                    ttt_cache,
+                    pred_iou=pred_iou,
+                    object_score_logits=object_score_for_gate,
+                )
 
         return current_out
 

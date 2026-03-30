@@ -2,39 +2,35 @@
 
 scratch:
   resolution: 1024
-  train_batch_size: 2  # 显存溢出，降为 2
+  train_batch_size: 4
   num_train_workers: 8
-  num_frames: 8        # P0: 配合 pooling+TBPTT，使用 8 帧
+  num_frames: 8
   max_num_objects: 3
-  base_lr: 1.0e-4      # 基础学习率，从 1e-5 提高到 1e-4 以加速新模块收敛
-  vision_lr: 0.0       # 视觉编码器学习率设为0
+  base_lr: 1.0e-5
+  vision_lr: 0.0
   phases_per_epoch: 1
-  num_epochs: 50       # DAVIS 数据集较小，可以适当增加轮数
+  num_epochs: 30
 
-# ============================================================================
-# TTT (Test-Time Training) 配置
-# ============================================================================
 ttt:
-  inner_lr: 1.0e-2           # 默认固定 inner-loop lr
-  learnable_lr: false        # 默认不学习 lr（更稳定）
-  lr_per_layer: true         # 可选：每层一个 lr
+  inner_lr: 1.0e-2
+  learnable_lr: false
+  lr_per_layer: true
   lr_min: 1.0e-4
   lr_max: 5.0e-2
-  k_detach: 8                # Truncated BPTT: 每 K 帧 detach
-  update_iou_thr: 0.5        # 推理时更新门控阈值
-  pool_size: 32              # 低分辨率 TTT 池化大小
-  verbose: true              # 调试日志开关
-  log_first_n: 5             # 前 N 个 iter 打印详细日志
-  second_order: false        # 是否使用二阶梯度（MAML full version）
+  k_detach: 8
+  update_iou_thr: 0.5
+  pool_size: 32
+  verbose: true
+  log_first_n: 5
+  alpha_log_every: 200
+  second_order: false
 
 dataset:
-  # 服务器上的 DAVIS 数据集路径
-  img_folder: /root/autodl-tmp/dataset_480p/DAVIS/JPEGImages/480p
-  gt_folder: /root/autodl-tmp/dataset_480p/DAVIS/Annotations/480p
-  file_list_txt: null  # 设为 null，自动读取文件夹下的所有视频
+  img_folder: /root/autodl-tmp/data_set/BDD100K_MOTS_semi/train/JPEGImages
+  gt_folder: /root/autodl-tmp/data_set/BDD100K_MOTS_semi/train/Annotations
+  file_list_txt: /root/autodl-tmp/data_set/BDD100K_MOTS_semi/train/train_videos.txt
   multiplier: 1
 
-# Video transforms (保持不变)
 vos:
   train_transforms:
     - _target_: training.dataset.transforms.ComposeAPI
@@ -79,21 +75,21 @@ trainer:
 
   model:
     _target_: training.model.sam2.SAM2Train
-    # 关键策略：冻结 Image Encoder，只训练新加入的 TTT 模块
     freeze_image_encoder: True
     compile_image_encoder: False
     ttt: ${ttt}
-    
+    use_ttt: false
+
     image_encoder:
       _target_: sam2.modeling.backbones.image_encoder.ImageEncoder
       scalp: 1
       trunk:
         _target_: sam2.modeling.backbones.hieradet.Hiera
-        embed_dim: 112
+        embed_dim: 144
         num_heads: 2
-        stages: [2, 3, 16, 3]
-        global_att_blocks: [12, 16, 20]
-        window_pos_embed_bkg_spatial_size: [14, 14]
+        stages: [2, 6, 36, 4]
+        global_att_blocks: [23, 33, 43]
+        window_pos_embed_bkg_spatial_size: [7, 7]
         window_spec: [8, 4, 16, 8]
       neck:
         _target_: sam2.modeling.backbones.image_encoder.FpnNeck
@@ -104,7 +100,7 @@ trainer:
           scale: null
           temperature: 10000
         d_model: 256
-        backbone_channel_list: [896, 448, 224, 112]
+        backbone_channel_list: [1152, 576, 288, 144]
         fpn_top_down_levels: [2, 3]
         fpn_interp_model: nearest
 
@@ -142,32 +138,32 @@ trainer:
       num_layers: 4
 
     memory_encoder:
-        _target_: sam2.modeling.memory_encoder.MemoryEncoder
-        out_dim: 64
-        position_encoding:
-          _target_: sam2.modeling.position_encoding.PositionEmbeddingSine
-          num_pos_feats: 64
-          normalize: true
-          scale: null
-          temperature: 10000
-        mask_downsampler:
-          _target_: sam2.modeling.memory_encoder.MaskDownSampler
-          kernel_size: 3
-          stride: 2
-          padding: 1
-        fuser:
-          _target_: sam2.modeling.memory_encoder.Fuser
-          layer:
-            _target_: sam2.modeling.memory_encoder.CXBlock
-            dim: 256
-            kernel_size: 7
-            padding: 3
-            layer_scale_init_value: 1e-6
-            use_dwconv: True
-          num_layers: 2
+      _target_: sam2.modeling.memory_encoder.MemoryEncoder
+      out_dim: 64
+      position_encoding:
+        _target_: sam2.modeling.position_encoding.PositionEmbeddingSine
+        num_pos_feats: 64
+        normalize: true
+        scale: null
+        temperature: 10000
+      mask_downsampler:
+        _target_: sam2.modeling.memory_encoder.MaskDownSampler
+        kernel_size: 3
+        stride: 2
+        padding: 1
+      fuser:
+        _target_: sam2.modeling.memory_encoder.Fuser
+        layer:
+          _target_: sam2.modeling.memory_encoder.CXBlock
+          dim: 256
+          kernel_size: 7
+          padding: 3
+          layer_scale_init_value: 1e-6
+          use_dwconv: True
+        num_layers: 2
 
-    # 记忆帧数量配置
-    num_maskmem: 3
+    num_maskmem: 7
+    use_full_memory: false
     image_size: ${scratch.resolution}
     sigmoid_scale_for_mem_enc: 20.0
     sigmoid_bias_for_mem_enc: -10.0
@@ -191,7 +187,6 @@ trainer:
     multimask_max_pt_num: 1
     use_mlp_for_obj_ptr_proj: true
 
-    ####### Training specific params #######
     prob_to_use_pt_input_for_train: 0.5
     prob_to_use_pt_input_for_eval: 0.0
     prob_to_use_box_input_for_train: 0.5
@@ -220,19 +215,19 @@ trainer:
           dataset:
             _target_: training.dataset.utils.ConcatDataset
             datasets:
-            - _target_: training.dataset.vos_dataset.VOSDataset
-              transforms: ${vos.train_transforms}
-              training: true
-              video_dataset:
-                _target_: training.dataset.vos_raw_dataset.PNGRawDataset
-                img_folder: ${dataset.img_folder}
-                gt_folder: ${dataset.gt_folder}
-                file_list_txt: ${dataset.file_list_txt}
-              sampler:
-                _target_: training.dataset.vos_sampler.RandomUniformSampler
-                num_frames: ${scratch.num_frames}
-                max_num_objects: ${scratch.max_num_objects}
-              multiplier: ${dataset.multiplier}
+              - _target_: training.dataset.vos_dataset.VOSDataset
+                transforms: ${vos.train_transforms}
+                training: true
+                video_dataset:
+                  _target_: training.dataset.vos_raw_dataset.PNGRawDataset
+                  img_folder: ${dataset.img_folder}
+                  gt_folder: ${dataset.gt_folder}
+                  file_list_txt: ${dataset.file_list_txt}
+                sampler:
+                  _target_: training.dataset.vos_sampler.RandomUniformSampler
+                  num_frames: ${scratch.num_frames}
+                  max_num_objects: ${scratch.max_num_objects}
+                multiplier: ${dataset.multiplier}
       shuffle: True
       num_workers: ${scratch.num_train_workers}
       pin_memory: True
@@ -259,9 +254,9 @@ trainer:
       - _target_: training.optimizer.layer_decay_param_modifier
         _partial_: True
         layer_decay_value: 0.9
-        apply_to: 'image_encoder.trunk'
+        apply_to: image_encoder.trunk
         overrides:
-          - pattern: '*pos_embed*'
+          - pattern: "*pos_embed*"
             value: 1.0
 
     options:
@@ -272,9 +267,9 @@ trainer:
             end_value: ${divide:${scratch.base_lr},10}
         - scheduler:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
-            value: 0.0  # 强制 vision_lr 为 0
+            value: 0.0
           param_names:
-            - 'image_encoder.*'
+            - image_encoder.*
       weight_decay:
         - scheduler:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
@@ -283,8 +278,8 @@ trainer:
             _target_: fvcore.common.param_scheduler.ConstantParamScheduler
             value: 0.0
           param_names:
-            - '*bias*'
-          module_cls_names: ['torch.nn.LayerNorm']
+            - "*bias*"
+          module_cls_names: ["torch.nn.LayerNorm"]
 
   loss:
     all:
@@ -294,7 +289,7 @@ trainer:
         loss_dice: 1
         loss_iou: 1
         loss_class: 1
-        loss_ttt: 0.1
+        loss_ttt: 0.0
       supervise_all_iou: true
       iou_use_l1_loss: true
       pred_obj_scores: true
@@ -308,35 +303,31 @@ trainer:
   logging:
     tensorboard_writer:
       _target_: training.utils.logger.make_tensorboard_logger
-      log_dir:  ${launcher.experiment_log_dir}/tensorboard
+      log_dir: ${launcher.experiment_log_dir}/tensorboard
       flush_secs: 120
       should_log: True
     log_dir: ${launcher.experiment_log_dir}/logs
     log_freq: 10
 
-  # initialize from a SAM 2 checkpoint
   checkpoint:
     save_dir: ${launcher.experiment_log_dir}/checkpoints
-    save_freq: 0 # 0 only last checkpoint is saved.
+    save_freq: 0
+    save_best_loss_key: Losses/train_all_loss
+    save_best_loss_mode: min
     model_weight_initializer:
       _partial_: True
       _target_: training.utils.checkpoint_utils.load_state_dict_into_model
       strict: False
       ignore_unexpected_keys: null
-      ignore_missing_keys: ['ttt_module*']
-
       state_dict:
         _target_: training.utils.checkpoint_utils.load_checkpoint_and_apply_kernels
-        # 请确保此路径下有预训练权重，或者修改为绝对路径
-        checkpoint_path: /root/autodl-tmp/ttt_rr/checkpoints/sam2.1_hiera_base_plus.pt
-        ckpt_state_dict_keys: ['model']
+        checkpoint_path: /root/autodl-tmp/ttt_rr/checkpoints/sam2.1_hiera_large.pt
+        ckpt_state_dict_keys: ["model"]
 
 launcher:
   num_nodes: 1
-  gpus_per_node: 1  # 默认为1，运行时可通过命令行覆盖
-  # Use environment variable EXP_DIR to avoid overwriting previous runs.
-  # If EXP_DIR is not set, default to a timestamped folder under ./logs.
-  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_davis_run2}
+  gpus_per_node: 1
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_bdd_restricted_no_ttt_run1}
 
 submitit:
   partition: null

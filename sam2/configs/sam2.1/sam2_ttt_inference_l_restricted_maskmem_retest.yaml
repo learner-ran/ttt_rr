@@ -1,0 +1,10 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_inference_l_restricted_v2
+  - _self_
+
+model:
+  ttt:
+    target_mode: maskmem
+    anchor_delta_clip: 0.0

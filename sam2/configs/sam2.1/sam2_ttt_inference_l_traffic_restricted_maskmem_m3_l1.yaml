@@ -1,0 +1,5 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_inference_l_restricted_maskmem_m3_l1
+  - _self_

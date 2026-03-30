@@ -43,6 +43,17 @@ class TTTConfig:
     
     # Pool size for low-res TTT
     pool_size: int = 32
+
+    # Fusion gate controls for the parallel TTT branch
+    use_quality_fusion_gate: bool = False
+    use_feature_agreement_gate: bool = False
+    fusion_gate_ema: float = 0.0
+    fusion_gate_floor: float = 0.0
+
+    # Target construction
+    target_mode: str = "maskmem"
+    anchor_delta_clip: float = 0.0
+    disable_inner_update: bool = False
     
     # Debug/logging
     verbose: bool = True
@@ -106,6 +117,10 @@ class TTTCache:
         self.step = 0
         self.detached_steps: List[int] = []
         self.update_count = 0  # 实际更新次数
+        self.last_quality_gate = torch.ones(
+            batch_size, 1, 1, 1, device=device, dtype=dtype
+        )
+        self.anchor_obj_ptr: Optional[torch.Tensor] = None
         
     def reset_from_init(self, W_init_list: List[torch.Tensor]):
         """从 W_init 重置 cache（用于新视频开始）"""
@@ -116,6 +131,10 @@ class TTTCache:
         self.step = 0
         self.detached_steps = []
         self.update_count = 0
+        self.last_quality_gate = torch.ones(
+            self.batch_size, 1, 1, 1, device=self.device, dtype=self.dtype
+        )
+        self.anchor_obj_ptr = None
         
     def detach_all(self):
         """对所有 W 执行 detach，用于 Truncated BPTT"""
@@ -131,6 +150,13 @@ class TTTCache:
             'detached_steps': self.detached_steps,
             'W_norms': [w.norm().item() for w in self.W_list],
             'W_means': [w.mean().item() for w in self.W_list],
+            'last_quality_gate': self.last_quality_gate.mean().item(),
+            'anchor_initialized': self.anchor_obj_ptr is not None,
+            'anchor_norm': (
+                self.anchor_obj_ptr.norm().item()
+                if self.anchor_obj_ptr is not None
+                else 0.0
+            ),
         }
 
 
@@ -256,14 +282,22 @@ class TTTModule(nn.Module):
         self,
         hidden_dim: int = 256,
         mem_dim: int = 64,
-        num_layers: int = 4,
+        num_layers: Optional[int] = None,
         config: Optional[TTTConfig] = None
     ):
         super().__init__()
-        
+
         # 配置
         if config is None:
-            config = TTTConfig(hidden_dim=hidden_dim, mem_dim=mem_dim, num_layers=num_layers)
+            config = TTTConfig(
+                hidden_dim=hidden_dim,
+                mem_dim=mem_dim,
+                num_layers=4 if num_layers is None else num_layers,
+            )
+        if num_layers is None:
+            num_layers = config.num_layers
+        else:
+            config.num_layers = num_layers
         self.config = config
         
         self.hidden_dim = hidden_dim
@@ -333,6 +367,10 @@ class TTTModule(nn.Module):
         print(f"  k_detach: {self.config.k_detach}")
         print(f"  update_iou_thr: {self.config.update_iou_thr}")
         print(f"  pool_size: {self.config.pool_size}")
+        print(f"  use_quality_fusion_gate: {self.config.use_quality_fusion_gate}")
+        print(f"  use_feature_agreement_gate: {self.config.use_feature_agreement_gate}")
+        print(f"  target_mode: {self.config.target_mode}")
+        print(f"  disable_inner_update: {self.config.disable_inner_update}")
         print("=" * 60)
         
     def _verify_state_dict(self):
@@ -550,13 +588,86 @@ class TTTModule(nn.Module):
         else:
             lr = self.config.inner_lr
         return lr
+
+    def _compute_feature_gate(
+        self, pix_feat: torch.Tensor, feat_ttt: torch.Tensor
+    ) -> torch.Tensor:
+        """Estimate whether the TTT feature agrees with the main feature stream."""
+        pix_summary = F.adaptive_avg_pool2d(pix_feat.detach().float(), 1).flatten(1)
+        ttt_summary = F.adaptive_avg_pool2d(feat_ttt.detach().float(), 1).flatten(1)
+        cosine = F.cosine_similarity(pix_summary, ttt_summary, dim=-1, eps=1.0e-6)
+        gate = ((cosine + 1.0) * 0.5).clamp(
+            min=self.config.fusion_gate_floor, max=1.0
+        )
+        return gate.view(-1, 1, 1, 1).to(device=feat_ttt.device, dtype=feat_ttt.dtype)
+
+    def update_cache_reliability(
+        self,
+        ttt_cache: TTTCache,
+        pred_iou: Optional[torch.Tensor],
+        object_score_logits: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        """Store the current frame reliability for gating the next-frame TTT fusion."""
+        quality = None
+        if pred_iou is not None:
+            quality = pred_iou.float().mean(dim=-1).clamp(0.0, 1.0)
+        if object_score_logits is not None:
+            obj_quality = torch.sigmoid(object_score_logits.float()).mean(dim=-1)
+            quality = obj_quality if quality is None else (quality * obj_quality)
+        if quality is None:
+            quality = torch.ones(
+                ttt_cache.batch_size, device=ttt_cache.device, dtype=torch.float32
+            )
+
+        quality_gate = quality.view(-1, 1, 1, 1).to(
+            device=ttt_cache.device, dtype=ttt_cache.dtype
+        )
+        ema = float(self.config.fusion_gate_ema)
+        if ema > 0.0:
+            quality_gate = ema * ttt_cache.last_quality_gate + (1.0 - ema) * quality_gate
+        ttt_cache.last_quality_gate = quality_gate.detach()
+        return ttt_cache.last_quality_gate
+
+    def update_anchor(self, ttt_cache: TTTCache, anchor_obj_ptr: Optional[torch.Tensor]):
+        """Initialize the identity anchor from the first available object pointer."""
+        if anchor_obj_ptr is None or ttt_cache.anchor_obj_ptr is not None:
+            return ttt_cache.anchor_obj_ptr
+        anchor = anchor_obj_ptr.detach().to(
+            device=ttt_cache.device, dtype=ttt_cache.dtype
+        )
+        if anchor.dim() == 1:
+            anchor = anchor.unsqueeze(0)
+        ttt_cache.anchor_obj_ptr = anchor
+        return ttt_cache.anchor_obj_ptr
+
+    def compute_fusion_gate(
+        self,
+        frame_idx: int,
+        pix_feat: torch.Tensor,
+        feat_ttt: torch.Tensor,
+        ttt_cache: Optional[TTTCache],
+    ) -> torch.Tensor:
+        """Compute a per-sample gate for the TTT branch before adding it to the main stream."""
+        gate = torch.ones(
+            feat_ttt.size(0), 1, 1, 1, device=feat_ttt.device, dtype=feat_ttt.dtype
+        )
+        if frame_idx == 0:
+            return gate.zero_()
+        if self.config.use_quality_fusion_gate and ttt_cache is not None:
+            gate = gate * ttt_cache.last_quality_gate.to(
+                device=feat_ttt.device, dtype=feat_ttt.dtype
+            )
+        if self.config.use_feature_agreement_gate:
+            gate = gate * self._compute_feature_gate(pix_feat, feat_ttt)
+        return gate.clamp(min=self.config.fusion_gate_floor, max=1.0)
     
     def step_update(
         self,
         vision_feats: torch.Tensor,
         maskmem_features: torch.Tensor,
         ttt_cache: TTTCache,
-        second_order: bool = False
+        second_order: bool = False,
+        anchor_obj_ptr: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """
         TTT 内循环更新：使用 autograd.grad 更新 cache 中的 W
@@ -586,14 +697,21 @@ class TTTModule(nn.Module):
             total_loss: 总损失
         """
         # P0-2 FIX: 推理时强制开启梯度，并用 FP32 保证数值稳定
-        return self._step_update_impl(vision_feats, maskmem_features, ttt_cache, second_order)
+        return self._step_update_impl(
+            vision_feats,
+            maskmem_features,
+            ttt_cache,
+            second_order,
+            anchor_obj_ptr,
+        )
     
     def _step_update_impl(
         self,
         vision_feats: torch.Tensor,
         maskmem_features: torch.Tensor,
         ttt_cache: TTTCache,
-        second_order: bool = False
+        second_order: bool = False,
+        anchor_obj_ptr: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """实际的 step_update 实现，被 enable_grad 包裹"""
         with torch.enable_grad():
@@ -602,14 +720,21 @@ class TTTModule(nn.Module):
                 vision_feats = vision_feats.float()
                 maskmem_features = maskmem_features.float()
                 
-                return self._step_update_core(vision_feats, maskmem_features, ttt_cache, second_order)
+                return self._step_update_core(
+                    vision_feats,
+                    maskmem_features,
+                    ttt_cache,
+                    second_order,
+                    anchor_obj_ptr,
+                )
     
     def _step_update_core(
         self,
         vision_feats: torch.Tensor,
         maskmem_features: torch.Tensor,
         ttt_cache: TTTCache,
-        second_order: bool = False
+        second_order: bool = False,
+        anchor_obj_ptr: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
         """step_update 核心逻辑"""
         self.step_counter += 1
@@ -621,20 +746,34 @@ class TTTModule(nn.Module):
         x = self._preprocess_input(vision_feats)  # [B, 1024, C]
         
         # ============== 2. 预处理 Y (Target) ==============
-        y = maskmem_features  # [B, C_mem, H, W]
-        
-        # Pool to 32x32 if needed
-        if y.shape[-2:] != (self.config.pool_size, self.config.pool_size):
-            y = F.adaptive_avg_pool2d(y, (self.config.pool_size, self.config.pool_size))
-        
-        # [B, C_mem, 32, 32] -> [B, 32, 32, C_mem] -> [B, 1024, C_mem]
-        y = y.permute(0, 2, 3, 1).flatten(1, 2)
-        
-        # Project: [B, 1024, C_mem] -> [B, 1024, C]
-        y = self.proj_mem(y)
-        
-        # **CRITICAL: Detach AFTER projection to prevent "moving target"**
-        y_target = y.detach()
+        target_mode = getattr(self.config, "target_mode", "maskmem")
+        if target_mode == "anchor_delta":
+            self.update_anchor(ttt_cache, anchor_obj_ptr)
+            if ttt_cache.anchor_obj_ptr is None:
+                anchor = x.detach().mean(dim=1)
+            else:
+                anchor = ttt_cache.anchor_obj_ptr.to(device=x.device, dtype=x.dtype)
+            y_target = anchor.unsqueeze(1) - x.detach()
+            clip_value = float(getattr(self.config, "anchor_delta_clip", 0.0))
+            if clip_value > 0.0:
+                y_target = y_target.clamp(min=-clip_value, max=clip_value)
+        elif target_mode == "self":
+            y_target = x.detach()
+        else:
+            y = maskmem_features  # [B, C_mem, H, W]
+
+            # Pool to 32x32 if needed
+            if y.shape[-2:] != (self.config.pool_size, self.config.pool_size):
+                y = F.adaptive_avg_pool2d(y, (self.config.pool_size, self.config.pool_size))
+
+            # [B, C_mem, 32, 32] -> [B, 32, 32, C_mem] -> [B, 1024, C_mem]
+            y = y.permute(0, 2, 3, 1).flatten(1, 2)
+
+            # Project: [B, 1024, C_mem] -> [B, 1024, C]
+            y = self.proj_mem(y)
+
+            # **CRITICAL: Detach AFTER projection to prevent "moving target"**
+            y_target = y.detach()
         
         # 日志
         verbose = self.config.verbose and (
@@ -653,6 +792,8 @@ class TTTModule(nn.Module):
         
         x_current = x
         
+        any_inner_update = False
+
         for i, layer in enumerate(self.layers):
             W_old = ttt_cache.W_list[i]  # [B, H, D, D] - 从 cache 读取
             
@@ -670,6 +811,9 @@ class TTTModule(nn.Module):
             # 计算损失
             loss = F.mse_loss(pred, y_target)
             total_loss = total_loss + loss
+
+            lr = self.get_lr(i)
+            skip_inner_update = self.config.disable_inner_update or abs(lr) < 1.0e-12
             
             # 调试信息
             if verbose:
@@ -679,41 +823,55 @@ class TTTModule(nn.Module):
                 print(f"    W_old.requires_grad: {W_old.requires_grad}, W_old.is_leaf: {W_old.is_leaf}")
                 print(f"    x_norm.requires_grad: {x_norm.requires_grad}")
             
-            # 计算梯度 (FO: create_graph=False)
-            # P0-4 FIX: 训练时需要 retain_graph=True（外循环 backward 需要计算图）
-            # 推理时可以 retain_graph=False（节省显存）
-            grad_W = torch.autograd.grad(
-                loss, 
-                W_old, 
-                create_graph=second_order,  # FO=False, SO=True
-                retain_graph=self.training  # 训练时保留图，推理时释放
-            )[0]
-            
-            # 获取学习率
-            lr = self.get_lr(i)
-            
-            # 更新 cache 中的 W（不修改 W_init！）
-            W_new = W_old - lr * grad_W
-            
-            # 记录 delta_norm
-            delta_norm = (W_new - W_old).norm().item()
-            delta_norms.append(delta_norm)
-            
-            # 写回 cache
-            ttt_cache.W_list[i] = W_new
-            
-            if verbose:
-                print(f"  Layer {i}: loss={loss.item():.6f}, delta_norm={delta_norm:.6f}, lr={lr:.4f}")
-            
-            # 使用更新后的 W 计算下一层的输入
-            with torch.no_grad():
-                ttt_out = layer.ttt_linear(x_norm, W_new.detach())
+            if skip_inner_update:
+                W_new = W_old
+                delta_norm = 0.0
+                delta_norms.append(delta_norm)
+                if verbose:
+                    reason = "disable_inner_update" if self.config.disable_inner_update else "lr=0"
+                    print(
+                        f"  Layer {i}: loss={loss.item():.6f}, delta_norm={delta_norm:.6f}, "
+                        f"lr={lr:.4f} (skip inner update: {reason})"
+                    )
+                ttt_out = pred
                 x_next = x_current + layer.alpha * ttt_out
                 x_next = x_next + layer.mlp(layer.ln2(x_next))
                 x_current = x_next
-        
+            else:
+                # 计算梯度 (FO: create_graph=False)
+                # P0-4 FIX: 训练时需要 retain_graph=True（外循环 backward 需要计算图）
+                # 推理时可以 retain_graph=False（节省显存）
+                grad_W = torch.autograd.grad(
+                    loss,
+                    W_old,
+                    create_graph=second_order,  # FO=False, SO=True
+                    retain_graph=self.training,  # 训练时保留图，推理时释放
+                )[0]
+
+                # 更新 cache 中的 W（不修改 W_init！）
+                W_new = W_old - lr * grad_W
+                any_inner_update = True
+
+                # 记录 delta_norm
+                delta_norm = (W_new - W_old).norm().item()
+                delta_norms.append(delta_norm)
+
+                # 写回 cache
+                ttt_cache.W_list[i] = W_new
+
+                if verbose:
+                    print(f"  Layer {i}: loss={loss.item():.6f}, delta_norm={delta_norm:.6f}, lr={lr:.4f}")
+
+                # 使用更新后的 W 计算下一层的输入
+                with torch.no_grad():
+                    ttt_out = layer.ttt_linear(x_norm, W_new.detach())
+                    x_next = x_current + layer.alpha * ttt_out
+                    x_next = x_next + layer.mlp(layer.ln2(x_next))
+                    x_current = x_next
+
         # 更新计数
-        ttt_cache.update_count += 1
+        if any_inner_update:
+            ttt_cache.update_count += 1
         
         # ============== 4. Truncated BPTT / 推理期 detach ==============
         # P0-3 FIX: 推理时每次更新后 detach，防止跨帧积图

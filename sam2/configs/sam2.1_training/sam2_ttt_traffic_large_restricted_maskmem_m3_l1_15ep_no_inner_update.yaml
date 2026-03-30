@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_traffic_large_restricted_maskmem_m3_l1_15ep
+  - _self_
+
+ttt:
+  disable_inner_update: true
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_traffic_restricted_maskmem_m3_l1_15ep_no_inner_update_run1}

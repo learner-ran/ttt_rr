@@ -82,6 +82,7 @@ trainer:
     # 关键策略：冻结 Image Encoder，只训练新加入的 TTT 模块
     freeze_image_encoder: True
     compile_image_encoder: False
+    ttt: ${ttt}
     
     image_encoder:
       _target_: sam2.modeling.backbones.image_encoder.ImageEncoder
@@ -294,6 +295,7 @@ trainer:
         loss_dice: 1
         loss_iou: 1
         loss_class: 1
+        loss_ttt: 0.1
       supervise_all_iou: true
       iou_use_l1_loss: true
       pred_obj_scores: true

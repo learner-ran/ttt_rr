@@ -1,0 +1,36 @@
+# @package _global_
+
+defaults:
+  - sam2.1_hiera_b+_MOSE_finetune
+  - _self_
+
+scratch:
+  train_batch_size: 4
+  num_train_workers: 8
+  base_lr: 1.0e-5
+  vision_lr: 0.0
+  num_epochs: 15
+
+dataset:
+  img_folder: /root/autodl-tmp/data_set/traffic_mots_semi/train/JPEGImages
+  gt_folder: /root/autodl-tmp/data_set/traffic_mots_semi/train/Annotations
+  file_list_txt: /root/autodl-tmp/data_set/traffic_mots_semi/train/train_videos_split_4to1.txt
+  multiplier: 1
+
+trainer:
+  model:
+    freeze_image_encoder: true
+    use_ttt: false
+    compile_image_encoder: false
+    add_all_frames_to_correct_as_cond: false
+  checkpoint:
+    save_best_loss_key: Losses/train_all_loss
+    save_best_loss_mode: min
+    model_weight_initializer:
+      state_dict:
+        checkpoint_path: /root/autodl-tmp/ttt_rr/checkpoints/sam2.1_hiera_base_plus.pt
+
+launcher:
+  num_nodes: 1
+  gpus_per_node: 1
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam2_traffic_baseplus_15ep_run1}

@@ -1,0 +1,16 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_traffic_large_restricted_maskmem_m3_l1
+  - _self_
+
+scratch:
+  num_epochs: 15
+
+ttt:
+  verbose: false
+  log_first_n: 0
+  alpha_log_every: 0
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_traffic_restricted_maskmem_m3_l1_15ep_run1}

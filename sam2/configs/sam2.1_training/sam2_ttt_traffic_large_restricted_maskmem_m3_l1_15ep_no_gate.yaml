@@ -1,0 +1,14 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_traffic_large_restricted_maskmem_m3_l1_15ep
+  - _self_
+
+ttt:
+  use_quality_fusion_gate: false
+  use_feature_agreement_gate: false
+  fusion_gate_floor: 0.0
+  update_iou_thr: -1.0
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_traffic_restricted_maskmem_m3_l1_15ep_no_gate_run1}

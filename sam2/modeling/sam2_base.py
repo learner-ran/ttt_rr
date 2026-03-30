@@ -99,6 +99,8 @@ class SAM2Base(torch.nn.Module):
         no_obj_embed_spatial: bool = False,
         # extra arguments used to construct the SAM mask decoder; if not None, it should be a dict of kwargs to be passed into `MaskDecoder` class.
         sam_mask_decoder_extra_args=None,
+        # TTT configuration passed from Hydra config.
+        ttt=None,
         # whether to enable TTT module (set False to mimic original SAM2 behavior)
         use_ttt: bool = True,
         compile_image_encoder: bool = False,
@@ -195,15 +197,14 @@ class SAM2Base(torch.nn.Module):
         # TTT Module 初始化 (Cache-Based Meta-Learning)
         # ============================================================================
         if self.use_ttt:
-            ttt_config = TTTConfig(
+            ttt_cfg_kwargs = {}
+            if ttt is not None:
+                ttt_cfg_kwargs = {k: v for k, v in ttt.items()}
+            ttt_cfg_kwargs.update(
                 hidden_dim=self.hidden_dim,
                 mem_dim=self.mem_dim,
-                num_layers=4,
-                num_heads=4,
-                verbose=False,
-                log_first_n=0,
-                alpha_log_every=200,
             )
+            ttt_config = TTTConfig(**ttt_cfg_kwargs)
             
             self.ttt_module = TTTModule(
                 hidden_dim=self.hidden_dim,
@@ -221,8 +222,8 @@ class SAM2Base(torch.nn.Module):
         print(f"  mem_dim: {self.mem_dim}")
         if not self.use_full_memory:
             assert (
-                self.num_maskmem >= 3
-            ), f"num_maskmem must be >= 3 for Cond0+Last+Keyframe, got {self.num_maskmem}"
+                self.num_maskmem >= 1
+            ), f"num_maskmem must be >= 1 for restricted memory, got {self.num_maskmem}"
         print("=" * 60)
         
         # Freeze Image Encoder
@@ -624,21 +625,26 @@ class SAM2Base(torch.nn.Module):
                     t_pos_and_prevs.append((t_pos, out))
             else:
                 # Restricted Explicit Memory Stream
-                # Only retrieve {cond0, last, keyframe}
+                # num_maskmem=1 -> {cond0}
+                # num_maskmem=2 -> {cond0, last}
+                # num_maskmem>=3 -> {cond0, last, keyframe}
 
                 # 1. Last Frame (t-1)
-                if not track_in_reverse:
-                    last_frame_idx = frame_idx - 1
-                else:
-                    last_frame_idx = frame_idx + 1
+                last_frame_idx = None
+                out_last = None
+                if self.num_maskmem >= 2:
+                    if not track_in_reverse:
+                        last_frame_idx = frame_idx - 1
+                    else:
+                        last_frame_idx = frame_idx + 1
 
-                out_last = output_dict["non_cond_frame_outputs"].get(last_frame_idx, None)
-                if out_last is None:
-                    out_last = unselected_cond_outputs.get(last_frame_idx, None)
+                    out_last = output_dict["non_cond_frame_outputs"].get(last_frame_idx, None)
+                    if out_last is None:
+                        out_last = unselected_cond_outputs.get(last_frame_idx, None)
 
-                if out_last is not None:
-                    # Assign t_pos = num_maskmem - 1 (closest)
-                    t_pos_and_prevs.append((self.num_maskmem - 1, out_last))
+                    if out_last is not None:
+                        # Assign t_pos = num_maskmem - 1 (closest)
+                        t_pos_and_prevs.append((self.num_maskmem - 1, out_last))
 
                 # 2. Sparse Keyframe (max 1)
                 # Strategy: Find the most recent frame t such that t % keyframe_stride == 0 and t != last_frame_idx
@@ -664,12 +670,10 @@ class SAM2Base(torch.nn.Module):
                         best_key_idx = idx
                         break
 
-                if best_key_idx is not None:
+                if self.num_maskmem >= 3 and best_key_idx is not None:
                     out_key = output_dict["non_cond_frame_outputs"][best_key_idx]
                     # Assign t_pos = num_maskmem - 2 (second closest slot)
-                    # Ensure we don't overwrite if num_maskmem is small
-                    if self.num_maskmem >= 2:
-                        t_pos_and_prevs.append((self.num_maskmem - 2, out_key))
+                    t_pos_and_prevs.append((self.num_maskmem - 2, out_key))
 
             for t_pos, prev in t_pos_and_prevs:
                 if prev is None:
@@ -893,15 +897,20 @@ class SAM2Base(torch.nn.Module):
                 # TTT Forward: 使用 cache 中的 W
                 feat_ttt = self.ttt_module(current_vision_feats[-1], ttt_cache)  # [B, C, H, W]
                 
-                # Fusion Gate
-                gate = 1.0
-                if frame_idx == 0:
-                    gate = 0.0  # 第一帧不使用 TTT 输出
-                
-                # 日志
+                gate = self.ttt_module.compute_fusion_gate(
+                    frame_idx=frame_idx,
+                    pix_feat=pix_feat,
+                    feat_ttt=feat_ttt,
+                    ttt_cache=ttt_cache,
+                )
+
                 if self.ttt_module.step_counter < self.ttt_module.config.log_first_n:
-                    print(f"[TTT Fusion] frame={frame_idx}, gate={gate}, alpha={self.ttt_module.alpha_global.item():.4f}")
-                
+                    print(
+                        f"[TTT Fusion] frame={frame_idx}, "
+                        f"gate_mean={gate.mean().item():.4f}, "
+                        f"alpha={self.ttt_module.alpha_global.item():.4f}"
+                    )
+
                 # Fusion: pix_feat = memory_attention_out + alpha * gate * ttt_out
                 pix_feat = pix_feat + self.ttt_module.alpha_global * gate * feat_ttt
 
@@ -986,7 +995,7 @@ class SAM2Base(torch.nn.Module):
         (
             _,
             _,
-            _,
+            ious,
             low_res_masks,
             high_res_masks,
             obj_ptr,
@@ -1013,21 +1022,24 @@ class SAM2Base(torch.nn.Module):
             current_out,
         )
 
+        if self.use_ttt and "ttt_cache" in output_dict and output_dict["ttt_cache"] is not None:
+            self.ttt_module.update_cache_reliability(
+                output_dict["ttt_cache"],
+                pred_iou=ious,
+                object_score_logits=object_score_logits,
+            )
+
         # TTT Update
         if self.use_ttt and run_mem_encoder and "maskmem_features" in current_out and current_out["maskmem_features"] is not None:
-             # Gating
-             scores = torch.sigmoid(object_score_logits)
-             is_reliable = scores > 0.5 
-             
-             # Assuming batch size B=1 for simplicity or all reliable
-             if is_reliable.all():
-                 # TTT update: 匹配训练时的格式
-                 # current_vision_feats[-1] 已经是 [L, B, C] 格式，直接传入
-                 if "ttt_cache" in output_dict:
+             if "ttt_cache" in output_dict:
+                 should_update = self.ttt_module.should_update(ious, self.training)
+                 if should_update:
+                     # current_vision_feats[-1] 已经是 [L, B, C] 格式，直接传入
                      self.ttt_module.step_update(
                          vision_feats=current_vision_feats[-1],  # [L, B, C]
                          maskmem_features=current_out["maskmem_features"],  # [B, C_mem, H, W]
-                         ttt_cache=output_dict["ttt_cache"]
+                         ttt_cache=output_dict["ttt_cache"],
+                         anchor_obj_ptr=current_out.get("obj_ptr"),
                      )
         
         # Memory Pruning (Restricted Explicit Memory)

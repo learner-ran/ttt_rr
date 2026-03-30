@@ -1,0 +1,9 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_inference_l_restricted_maskmem_retest
+  - _self_
+
+model:
+  ttt:
+    num_layers: 2

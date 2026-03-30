@@ -1,0 +1,8 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_inference_l_restricted_maskmem_l1
+  - _self_
+
+model:
+  num_maskmem: 5

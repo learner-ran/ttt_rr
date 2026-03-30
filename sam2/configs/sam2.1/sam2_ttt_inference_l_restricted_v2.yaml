@@ -1,0 +1,15 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_inference_l_restricted
+
+model:
+  ttt:
+    num_layers: 2
+    use_quality_fusion_gate: true
+    use_feature_agreement_gate: true
+    fusion_gate_ema: 0.5
+    fusion_gate_floor: 0.05
+    verbose: false
+    log_first_n: 0
+    alpha_log_every: 0

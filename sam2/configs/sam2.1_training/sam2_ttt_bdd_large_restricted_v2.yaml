@@ -1,0 +1,45 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_bdd_large_restricted
+  - _self_
+
+ttt:
+  num_layers: 2
+  use_quality_fusion_gate: true
+  use_feature_agreement_gate: true
+  fusion_gate_ema: 0.5
+  fusion_gate_floor: 0.05
+
+trainer:
+  optim:
+    options:
+      lr:
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.CosineParamScheduler
+            start_value: ${scratch.base_lr}
+            end_value: ${divide:${scratch.base_lr},10}
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: 0.0
+          param_names:
+            - image_encoder.*
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.CosineParamScheduler
+            start_value: ${times:${scratch.base_lr},5}
+            end_value: ${times:${divide:${scratch.base_lr},10},5}
+          param_names:
+            - ttt_module.*
+      weight_decay:
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: 0.1
+        - scheduler:
+            _target_: fvcore.common.param_scheduler.ConstantParamScheduler
+            value: 0.0
+          param_names:
+            - "*bias*"
+          module_cls_names: ["torch.nn.LayerNorm"]
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_bdd_restricted_v2_run1}

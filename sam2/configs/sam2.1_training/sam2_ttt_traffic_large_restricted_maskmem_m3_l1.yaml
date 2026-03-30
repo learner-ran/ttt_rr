@@ -1,0 +1,13 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_bdd_large_restricted_maskmem_m3_l1
+  - _self_
+
+dataset:
+  img_folder: /root/autodl-tmp/data_set/traffic_mots_semi/train/JPEGImages
+  gt_folder: /root/autodl-tmp/data_set/traffic_mots_semi/train/Annotations
+  file_list_txt: /root/autodl-tmp/data_set/traffic_mots_semi/train/train_videos_split_4to1.txt
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_traffic_restricted_maskmem_m3_l1_run1}

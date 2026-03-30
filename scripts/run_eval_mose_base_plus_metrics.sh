@@ -8,11 +8,11 @@ conda activate ttt_sam
 cd /root/autodl-tmp/ttt_rr
 export PYTHONPATH=.
 
-# Paths aligned with run_inference_mose_test_large.sh
+# Paths aligned with run_inference_mose_test_base_plus.sh
 GT_ROOT="/root/autodl-tmp/data_set/MOSE/train/train/Annotations"
-PRED_ROOT="${PRED_ROOT:-/root/autodl-tmp/output_mose_val/output_mose_test_large}"
+PRED_ROOT="${PRED_ROOT:-/root/autodl-tmp/output_mose_val/output_mose_test_base_plus}"
 
-echo "Running MOSE evaluation (SAM 2.1 large)..."
+echo "Running MOSE evaluation (SAM 2.1 base+)..."
 echo "GT root: ${GT_ROOT}"
 echo "Pred root: ${PRED_ROOT}"
 

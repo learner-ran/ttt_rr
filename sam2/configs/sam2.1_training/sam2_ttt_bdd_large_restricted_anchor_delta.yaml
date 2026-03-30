@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_bdd_large_restricted_v2
+  - _self_
+
+ttt:
+  target_mode: anchor_delta
+  anchor_delta_clip: 1.0
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_bdd_restricted_anchor_delta_run1}

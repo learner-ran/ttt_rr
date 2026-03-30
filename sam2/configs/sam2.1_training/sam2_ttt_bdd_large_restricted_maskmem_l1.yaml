@@ -1,0 +1,11 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_bdd_large_restricted_maskmem_retest
+  - _self_
+
+ttt:
+  num_layers: 1
+
+launcher:
+  experiment_log_dir: ${env:EXP_DIR,./logs/sam_ttt_bdd_restricted_maskmem_l1_run1}

@@ -353,7 +353,8 @@ def benchmark(
                 "We are *NOT SKIPPING* the evaluation of the first and the last frame (*NOT STANDARD* for semi-supervised video object segmentation)."
             )
 
-    pool = Pool(num_processes)
+    use_multiprocessing = num_processes is None or num_processes > 1
+    pool = Pool(num_processes) if use_multiprocessing else None
     start = time.time()
     to_wait = []
     for gt_root, mask_root in zip(gt_roots, mask_roots):
@@ -402,41 +403,41 @@ def benchmark(
                 f"In dataset {gt_root}, we are evaluating on {len(videos)} videos: {videos}"
             )
 
+        evaluator = VideoEvaluator(
+            gt_root, mask_root, skip_first_and_last=skip_first_and_last
+        )
         if single_dataset:
-            if verbose:
-                results = tqdm.tqdm(
-                    pool.imap(
-                        VideoEvaluator(
-                            gt_root, mask_root, skip_first_and_last=skip_first_and_last
+            if use_multiprocessing:
+                if verbose:
+                    results = tqdm.tqdm(
+                        pool.imap(
+                            evaluator,
+                            videos,
                         ),
+                        total=len(videos),
+                    )
+                else:
+                    results = pool.map(
+                        evaluator,
                         videos,
-                    ),
-                    total=len(videos),
-                )
+                    )
             else:
-                results = pool.map(
-                    VideoEvaluator(
-                        gt_root, mask_root, skip_first_and_last=skip_first_and_last
-                    ),
-                    videos,
-                )
+                iterator = map(evaluator, videos)
+                results = tqdm.tqdm(iterator, total=len(videos)) if verbose else list(iterator)
         else:
-            to_wait.append(
-                pool.map_async(
-                    VideoEvaluator(
-                        gt_root, mask_root, skip_first_and_last=skip_first_and_last
-                    ),
-                    videos,
-                )
-            )
+            if use_multiprocessing:
+                to_wait.append(pool.map_async(evaluator, videos))
+            else:
+                to_wait.append(list(map(evaluator, videos)))
 
-    pool.close()
+    if pool is not None:
+        pool.close()
 
     all_global_jf, all_global_j, all_global_f = [], [], []
     all_object_metrics = []
     for i, mask_root in enumerate(mask_roots):
         if not single_dataset:
-            results = to_wait[i].get()
+            results = to_wait[i].get() if use_multiprocessing else to_wait[i]
 
         all_iou = []
         all_boundary_f = []

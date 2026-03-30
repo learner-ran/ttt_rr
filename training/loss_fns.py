@@ -157,6 +157,8 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert "loss_iou" in self.weight_dict
         if "loss_class" not in self.weight_dict:
             self.weight_dict["loss_class"] = 0.0
+        if "loss_ttt" not in self.weight_dict:
+            self.weight_dict["loss_ttt"] = 0.0
 
         self.focal_alpha_obj_score = focal_alpha_obj_score
         self.focal_gamma_obj_score = focal_gamma_obj_score
@@ -205,13 +207,22 @@ class MultiStepMultiMasksAndIous(nn.Module):
         assert len(object_score_logits_list) == len(ious_list)
 
         # accumulate the loss over prediction steps
-        losses = {"loss_mask": 0, "loss_dice": 0, "loss_iou": 0, "loss_class": 0}
+        zero = target_masks.new_tensor(0.0)
+        losses = {
+            "loss_mask": zero.clone(),
+            "loss_dice": zero.clone(),
+            "loss_iou": zero.clone(),
+            "loss_class": zero.clone(),
+            "loss_ttt": zero.clone(),
+        }
         for src_masks, ious, object_score_logits in zip(
             src_masks_list, ious_list, object_score_logits_list
         ):
             self._update_losses(
                 losses, src_masks, target_masks, ious, num_objects, object_score_logits
             )
+        if "ttt_loss" in outputs and outputs["ttt_loss"] is not None:
+            losses["loss_ttt"] += outputs["ttt_loss"]
         losses[CORE_LOSS_KEY] = self.reduce_loss(losses)
         return losses
 

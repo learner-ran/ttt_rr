@@ -1,0 +1,12 @@
+# @package _global_
+
+defaults:
+  - sam2_ttt_inference_l_traffic_restricted_maskmem_m3_l1
+  - _self_
+
+model:
+  ttt:
+    use_quality_fusion_gate: false
+    use_feature_agreement_gate: false
+    fusion_gate_floor: 0.0
+    update_iou_thr: -1.0
